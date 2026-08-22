@@ -1,7 +1,7 @@
-# dsh-self-evolve bundle patch — 追加一行插件装配。
+# dsh-auto-evolve bundle patch — 追加一行插件装配。
 #
 # 该 patch 由 dsh profile loader 按 `dsh.profile.bundles` 顺序应用:
-# `dsh plugin --profile web add dsh-self-evolve` 安装后会自动进入 bundle 层,
+# `dsh plugin --profile web add dsh-auto-evolve` 安装后会自动进入 bundle 层,
 # 无需手改任何 cordis.yml。插件依赖的存储/LLM/工具/skill 服务由
 # dsh-base / web bundle 提供。
 #
@@ -10,7 +10,7 @@
 
 - insert:
     - id: self-evolve
-      name: dsh-self-evolve
+      name: dsh-auto-evolve
       config:
         mode: observe            # observe | propose | auto-apply
         observation:

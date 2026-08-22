@@ -1,5 +1,5 @@
 /**
- * Proposal engine for dsh-self-evolve.
+ * Proposal engine for dsh-auto-evolve.
  *
  * Generates evolution proposals by calling the harness LLM service
  * (`ctx.llm.stream`) with a bounded prompt built from the current genome and
@@ -7,7 +7,7 @@
  * then validates the structured output against the closed mutation
  * vocabulary. Any parse or schema failure yields `null` — the loop never
  * applies an unvalidated proposal.
- * @module dsh-self-evolve/src/propose/engine
+ * @module dsh-auto-evolve/src/propose/engine
  */
 
 import { randomUUID } from 'node:crypto'

@@ -1,5 +1,5 @@
 /**
- * Sandboxed trial runner for dsh-self-evolve.
+ * Sandboxed trial runner for dsh-auto-evolve.
  *
  * A trial replays a failing episode inside an isolated, scoped sub-agent:
  * the agent is created through the harness registry (`ctx.agents.create`)
@@ -9,7 +9,7 @@
  * listeners collect the metrics. The agent is driven with `followup`, waited
  * to idle (or the wall-clock cap), then disposed. Nothing from the trial
  * leaks into the host session: scoped registrations unwind with disposal.
- * @module dsh-self-evolve/src/validate/trial
+ * @module dsh-auto-evolve/src/validate/trial
  */
 
 import { randomUUID } from 'node:crypto'

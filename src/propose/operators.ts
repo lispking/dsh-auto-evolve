@@ -1,12 +1,12 @@
 /**
- * Mutation operators and proposal vocabulary for dsh-self-evolve.
+ * Mutation operators and proposal vocabulary for dsh-auto-evolve.
  *
  * The plugin owns a closed set of evolvable assets. An operator is one
  * bounded mutation the proposal engine may ask for — the LLM never invents
  * asset kinds, it only fills in operator payloads. This is the safety
  * boundary of the whole evolution loop: the vocabulary is code, the content
  * is model-generated, and both are validated before any trial runs.
- * @module dsh-self-evolve/src/propose/operators
+ * @module dsh-auto-evolve/src/propose/operators
  */
 
 import { z } from 'zod'

@@ -1,12 +1,12 @@
 /**
- * Trial metrics and baseline comparison for dsh-self-evolve.
+ * Trial metrics and baseline comparison for dsh-auto-evolve.
  *
  * A trial run is a sandboxed agent executing a replayed episode. Metrics are
  * the observable outcome: tool activity, failures, completion, and duration.
  * `compareMetrics` is the pure decision function the validation layer uses to
  * decide whether a candidate mutation helped — kept free of harness wiring so
  * it is unit-testable in isolation.
- * @module dsh-self-evolve/src/validate/metrics
+ * @module dsh-auto-evolve/src/validate/metrics
  */
 
 /** How a trial run ended. */

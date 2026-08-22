@@ -1,5 +1,5 @@
 /**
- * Observation collection layer for dsh-self-evolve.
+ * Observation collection layer for dsh-auto-evolve.
  *
  * Listens on the harness's runtime extension points and records signals into
  * the durable observations table:
@@ -12,7 +12,7 @@
  * crossed inside the rolling window, the collector fires `onTrigger` with the
  * crossed signal so the proposal cycle can start. The collector is a pure
  * observer — it never vetoes or rewrites calls.
- * @module dsh-self-evolve/src/observe/collector
+ * @module dsh-auto-evolve/src/observe/collector
  */
 
 import type { Context } from '@deepseek-ai/cordis'

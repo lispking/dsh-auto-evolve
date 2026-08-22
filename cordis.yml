@@ -1,11 +1,11 @@
-# dsh-self-evolve — cordis.yml 装配示例
+# dsh-auto-evolve — cordis.yml 装配示例
 #
 # 在 DeepSeek Harness 的 cordis.yml 中追加本插件的条目即可启用。
 # 插件依赖 harness 自带的核心服务(llm / tools / agent / skills / storage),
 # 这些服务由 dsh 产品装配提供,无需额外配置。
 #
 # - id: self-evolve
-#   name: dsh-self-evolve
+#   name: dsh-auto-evolve
 #   config:
 #     mode: observe            # observe | propose | auto-apply
 #     observation:

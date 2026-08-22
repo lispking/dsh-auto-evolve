@@ -1,5 +1,5 @@
 /**
- * Auto-apply orchestration for dsh-self-evolve.
+ * Auto-apply orchestration for dsh-auto-evolve.
  *
  * `runAutoApplyCycle` closes the evolution loop for `auto-apply` mode:
  *
@@ -16,7 +16,7 @@
  * Regression rollback is a separate concern handled by the caller: keep a
  * per-apply watch (`appliedAt` + the triggering observation key) and roll
  * back an applied asset when the same key crosses its threshold again.
- * @module dsh-self-evolve/src/evolve/loop
+ * @module dsh-auto-evolve/src/evolve/loop
  */
 
 import type { Context } from '@deepseek-ai/cordis'

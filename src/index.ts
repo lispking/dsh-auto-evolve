@@ -1,5 +1,5 @@
 /**
- * dsh-self-evolve: a self-evolving plugin for DeepSeek Harness.
+ * dsh-auto-evolve: a self-evolving plugin for DeepSeek Harness.
  *
  * The plugin owns a small set of evolvable assets (skills, tool-result
  * post-processors, system-prompt sections, guard policies). It observes the
@@ -7,7 +7,7 @@
  * inside a sandboxed trial agent, and applies only verified mutations to its
  * own genome — with a versioned ledger and rollback on regression.
  *
- * @module dsh-self-evolve
+ * @module dsh-auto-evolve
  */
 
 import type { Context } from '@deepseek-ai/cordis'

@@ -1,10 +1,10 @@
 /**
- * Storage-domain service for dsh-self-evolve. Opens the `self_evolve` domain
+ * Storage-domain service for dsh-auto-evolve. Opens the `self_evolve` domain
  * and exposes typed handles for the genome, ledger, observations, and the
  * shared genome state. Mirrors the WorkspaceRegistry pattern: `Service.init`
  * opens the domain, an effect owns its close, and consumers inject
  * `selfEvolveStore`.
- * @module dsh-self-evolve/src/storage/store
+ * @module dsh-auto-evolve/src/storage/store
  */
 
 import { randomUUID } from 'node:crypto'

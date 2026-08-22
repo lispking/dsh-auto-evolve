@@ -1,5 +1,5 @@
 /**
- * Application layer for dsh-self-evolve.
+ * Application layer for dsh-auto-evolve.
  *
  * Turns validated candidate assets into LIVE genome entries: skills are
  * registered on the plugin context via `ctx.skills.register` (immediately
@@ -11,7 +11,7 @@
  * contribution, restores the parent content as a new candidate (ready for the
  * next cycle), and writes a `rollback` ledger entry. On plugin disposal all
  * live disposers run, so nothing leaks into a later session.
- * @module dsh-self-evolve/src/apply/applier
+ * @module dsh-auto-evolve/src/apply/applier
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
@@ -70,7 +70,7 @@ export class SelfEvolveApplier extends Service {
   private requireStore(): SelfEvolveStore {
     const store = this.ctx.selfEvolveStore
     if (store === undefined || !store.ready) {
-      throw new Error('self-evolve: store is not initialized (mount dsh-self-evolve after storage-domain)')
+      throw new Error('self-evolve: store is not initialized (mount dsh-auto-evolve after storage-domain)')
     }
     return store
   }

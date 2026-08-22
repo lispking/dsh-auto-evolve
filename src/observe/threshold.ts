@@ -1,11 +1,11 @@
 /**
- * Threshold engine for dsh-self-evolve.
+ * Threshold engine for dsh-auto-evolve.
  *
  * Pure decision helpers: given the durable observations store, decide whether
  * one kind/key has crossed its configured threshold inside the rolling
  * window. Kept free of event wiring so the logic is unit-testable in
  * isolation.
- * @module dsh-self-evolve/src/observe/threshold
+ * @module dsh-auto-evolve/src/observe/threshold
  */
 
 import type { SelfEvolveStore } from '../storage/store.ts'

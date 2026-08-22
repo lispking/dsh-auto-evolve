@@ -1,9 +1,9 @@
 /**
- * Durable storage-domain declaration for dsh-self-evolve: the genome (current
+ * Durable storage-domain declaration for dsh-auto-evolve: the genome (current
  * evolvable assets), the evolution ledger (every applied/rolled-back mutation),
  * and the observation log (collected runtime signals). Record schemas are zod
  * (per the storage-domain split rationale); plugin `Config` stays schemastery.
- * @module dsh-self-evolve/src/storage/spec
+ * @module dsh-auto-evolve/src/storage/spec
  */
 
 import { z } from 'zod'

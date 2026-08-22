@@ -1,4 +1,4 @@
-# dsh-self-evolve
+# dsh-auto-evolve
 
 A **self-evolving plugin** for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (`dsh`). It observes how the agent runs, proposes improvements to *its own* assets via the LLM, validates each proposal inside a sandboxed trial agent, and applies only verified mutations — with a versioned ledger and automatic rollback on regression.
 
@@ -38,23 +38,23 @@ The plugin is a **dsh bundle**: install it with the official CLI in one command 
 
 ```sh
 # Install into the web profile (the default UI profile)
-dsh plugin --profile web add dsh-self-evolve
+dsh plugin --profile web add dsh-auto-evolve
 
 # Or into the TUI profile
-dsh plugin --profile tui add dsh-self-evolve
+dsh plugin --profile tui add dsh-auto-evolve
 ```
 
-`dsh plugin add` initializes the profile if needed, installs the package, and automatically adds `dsh-self-evolve` to the profile's bundle stack (`dsh.profile.bundles`). The bundled `cordis.patch.yml` registers the plugin row with the defaults below; restart `dsh` and the plugin is live.
+`dsh plugin add` initializes the profile if needed, installs the package, and automatically adds `dsh-auto-evolve` to the profile's bundle stack (`dsh.profile.bundles`). The bundled `cordis.patch.yml` registers the plugin row with the defaults below; restart `dsh` and the plugin is live.
 
 Local development / source build:
 
 ```sh
-git clone https://github.com/lispking/dsh-self-evolve.git
-cd dsh-self-evolve
+git clone https://github.com/lispking/dsh-auto-evolve.git
+cd dsh-auto-evolve
 pnpm install
 pnpm build
 # Install your local checkout into a profile
-dsh plugin --profile web add /absolute/path/to/dsh-self-evolve
+dsh plugin --profile web add /absolute/path/to/dsh-auto-evolve
 ```
 
 ### Custom configuration
@@ -112,7 +112,7 @@ The bundle applies a default config; to change it, override the row in your own 
 ## Programmatic API
 
 ```ts
-import { SelfEvolveStore, SelfEvolveApplier, runProposalCycle, validateMutations } from 'dsh-self-evolve'
+import { SelfEvolveStore, SelfEvolveApplier, runProposalCycle, validateMutations } from 'dsh-auto-evolve'
 
 // Run one proposal cycle (persists candidate assets).
 const materialized = await runProposalCycle(ctx, store, { provider, model, maxTokens: 2000 })

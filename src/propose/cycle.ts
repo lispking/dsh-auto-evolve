@@ -1,5 +1,5 @@
 /**
- * Proposal cycle orchestration for dsh-self-evolve.
+ * Proposal cycle orchestration for dsh-auto-evolve.
  *
  * One proposal cycle: guarded by the durable `cycleActive` flag (no
  * re-entrancy), it snapshots the current genome and recent observations,
@@ -7,7 +7,7 @@
  * `candidate` assets in the genome table (proposalId recorded). The
  * validation layer (task 6) turns candidates into trial runs; the
  * application layer (task 7) promotes winners to `applied`.
- * @module dsh-self-evolve/src/propose/cycle
+ * @module dsh-auto-evolve/src/propose/cycle
  */
 
 import type { Context } from '@deepseek-ai/cordis'

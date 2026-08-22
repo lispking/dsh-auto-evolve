@@ -1,4 +1,4 @@
-# dsh-self-evolve
+# dsh-auto-evolve
 
 一个用于 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)(`dsh`)的**自我进化插件**。它观察 agent 的运行表现,通过 LLM 提议改进**它自己**的资产,在每个提案放入沙箱子 agent 验证之后,只应用通过验证的变异——并配备版本化台账与回归自动回滚。
 
@@ -38,23 +38,23 @@
 
 ```sh
 # 装入 web profile(默认 UI profile)
-dsh plugin --profile web add dsh-self-evolve
+dsh plugin --profile web add dsh-auto-evolve
 
 # 或装入 TUI profile
-dsh plugin --profile tui add dsh-self-evolve
+dsh plugin --profile tui add dsh-auto-evolve
 ```
 
-`dsh plugin add` 会按需初始化 profile、安装包,并自动把 `dsh-self-evolve` 加入 profile 的 bundle 层栈(`dsh.profile.bundles`)。随包发布的 `cordis.patch.yml` 以默认配置注册插件行;重启 `dsh` 后插件即生效。
+`dsh plugin add` 会按需初始化 profile、安装包,并自动把 `dsh-auto-evolve` 加入 profile 的 bundle 层栈(`dsh.profile.bundles`)。随包发布的 `cordis.patch.yml` 以默认配置注册插件行;重启 `dsh` 后插件即生效。
 
 本地开发 / 源码构建:
 
 ```sh
-git clone https://github.com/lispking/dsh-self-evolve.git
-cd dsh-self-evolve
+git clone https://github.com/lispking/dsh-auto-evolve.git
+cd dsh-auto-evolve
 pnpm install
 pnpm build
 # 把本地 checkout 装入 profile
-dsh plugin --profile web add /绝对/路径/to/dsh-self-evolve
+dsh plugin --profile web add /绝对/路径/to/dsh-auto-evolve
 ```
 
 ### 自定义配置
@@ -112,7 +112,7 @@ bundle 应用一份默认配置;如需修改,在你自己 profile 的 patch(在�
 ## 编程 API
 
 ```ts
-import { SelfEvolveStore, SelfEvolveApplier, runProposalCycle, validateMutations } from 'dsh-self-evolve'
+import { SelfEvolveStore, SelfEvolveApplier, runProposalCycle, validateMutations } from 'dsh-auto-evolve'
 
 // 运行一个提议周期(持久化候选资产)。
 const materialized = await runProposalCycle(ctx, store, { provider, model, maxTokens: 2000 })
