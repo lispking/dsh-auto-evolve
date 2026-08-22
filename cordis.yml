@@ -1,0 +1,25 @@
+# dsh-self-evolve — cordis.yml 装配示例
+#
+# 在 DeepSeek Harness 的 cordis.yml 中追加本插件的条目即可启用。
+# 插件依赖 harness 自带的核心服务(llm / tools / agent / skills / storage),
+# 这些服务由 dsh 产品装配提供,无需额外配置。
+#
+# - id: self-evolve
+#   name: dsh-self-evolve
+#   config:
+#     mode: observe            # observe | propose | auto-apply
+#     observation:
+#       toolFailureThreshold: 3
+#       repeatThreshold: 3
+#       requestErrorThreshold: 3
+#       windowMs: 300000
+#     proposal:
+#       maxProposalsPerTrigger: 1
+#       maxEpisodesPerProposal: 5
+#       maxPromptChars: 24000
+#       maxTokens: 2000
+#     validation:
+#       maxTrialMs: 30000
+#       maxToolCalls: 20
+#       maxTrialSteps: 12
+#       maxTrialTokens: 8000

@@ -1,0 +1,30 @@
+# dsh-self-evolve bundle patch — 追加一行插件装配。
+#
+# 该 patch 由 dsh profile loader 按 `dsh.profile.bundles` 顺序应用:
+# `dsh plugin --profile web add dsh-self-evolve` 安装后会自动进入 bundle 层,
+# 无需手改任何 cordis.yml。插件依赖的存储/LLM/工具/skill 服务由
+# dsh-base / web bundle 提供。
+#
+# 用户可在自己的 cordis.patch.yml 里按 id `self-evolve` 覆盖下方默认配置
+# (整个 config 被替换而非合并)。
+
+- insert:
+    - id: self-evolve
+      name: dsh-self-evolve
+      config:
+        mode: observe            # observe | propose | auto-apply
+        observation:
+          toolFailureThreshold: 3
+          repeatThreshold: 3
+          requestErrorThreshold: 3
+          windowMs: 300000
+        proposal:
+          maxProposalsPerTrigger: 1
+          maxEpisodesPerProposal: 5
+          maxPromptChars: 24000
+          maxTokens: 2000
+        validation:
+          maxTrialMs: 30000
+          maxToolCalls: 20
+          maxTrialSteps: 12
+          maxTrialTokens: 8000

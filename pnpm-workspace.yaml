@@ -1,0 +1,19 @@
+packages:
+  - .
+  - ../deepseek-harness/vendor/*
+  - ../deepseek-harness/packages/*/*
+  - ../deepseek-harness/native/landlock-run
+  - ../deepseek-harness/native/landlock-run/packages/*
+  - ../deepseek-harness/apps/*
+  - ../deepseek-harness/website
+  - ../deepseek-harness/examples
+
+# pnpm 11: explicit build-script decisions for packages whose postinstall we
+# do not need (native addons used by harness runtime packages, not by this
+# plugin). esbuild's postinstall is approved so vitest/tsdown work reliably.
+allowBuilds:
+  '@google/genai': false
+  esbuild: true
+  koffi: false
+  node-pty: false
+  protobufjs: false
