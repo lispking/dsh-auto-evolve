@@ -1,5 +1,5 @@
 {
-  "name": "dsh-self-evolve",
+  "name": "dsh-auto-evolve",
   "description": "Self-evolving plugin for DeepSeek Harness: observes agent behavior, proposes improvements to its own skills/policies via LLM, validates them in a sandboxed trial agent, and applies versioned mutations with rollback.",
   "version": "0.1.0",
   "keywords": [
