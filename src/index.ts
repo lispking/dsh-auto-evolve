@@ -14,6 +14,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import SelfEvolveStore from './storage/store.ts'
 import SelfEvolveApplier from './apply/applier.ts'
+import { CostLedger } from './propose/budget.ts'
 import { installObservations } from './observe/collector.ts'
 import { runProposalCycle } from './propose/cycle.ts'
 import { resolveProposalTarget } from './propose/engine.ts'
@@ -65,6 +66,40 @@ export {
   trackApplied,
 } from './evolve/loop.ts'
 export type { AutoApplyOptions, AutoApplyResult, RegressionWatch } from './evolve/loop.ts'
+export { aggregateKey, aggregateKind, isUnderPressure } from './observe/aggregate.ts'
+export type { AggregatedObservation } from './observe/aggregate.ts'
+export { clusterObservations } from './observe/cluster.ts'
+export type { ClusteringConfig, ObservationCluster } from './observe/cluster.ts'
+export {
+  ConvergenceTracker,
+  classifyCycle,
+} from './evolve/loop.ts'
+export type {
+  ConvergenceConfig,
+  ConvergenceVerdict,
+  CycleOutcome,
+} from './evolve/loop.ts'
+export {
+  exportGenome,
+  importGenome,
+  diffGenome,
+} from './storage/snapshot.ts'
+export type { GenomeDiff, GenomeSnapshot, ImportResult, SnapshotAsset } from './storage/snapshot.ts'
+export {
+  getEvolutionTimeline,
+  getAssetHistory,
+  getGenomeByKind,
+  getObservationTrend,
+  getHealthSummary,
+} from './storage/query.ts'
+export type {
+  AssetHistory,
+  AssetVersionEntry,
+  HealthSummary,
+  ObservationTrend,
+  TimelineEntry,
+  TrendBucket,
+} from './storage/query.ts'
 
 /** Plugin config, validated by the same-named schemastery schema. */
 export interface Config {
@@ -83,6 +118,13 @@ export interface Config {
     maxEpisodesPerProposal?: number
     maxPromptChars?: number
     maxTokens?: number
+  }
+  /** Cost/budget ceilings. `0` disables a cap. */
+  budget?: {
+    /** Max tokens spendable in one proposal cycle. */
+    maxCostPerCycle?: number
+    /** Max tokens spendable in one UTC day. */
+    dailyBudget?: number
   }
   /** Sandboxed trial-run bounds. */
   validation?: {
@@ -106,6 +148,10 @@ export const Config: z<Config> = z.object({
     maxEpisodesPerProposal: z.number().default(5),
     maxPromptChars: z.number().default(24000),
     maxTokens: z.number().default(2000),
+  }),
+  budget: z.object({
+    maxCostPerCycle: z.number().default(0),
+    dailyBudget: z.number().default(0),
   }),
   validation: z.object({
     maxTrialMs: z.number().default(30_000),
@@ -140,6 +186,13 @@ export function apply(ctx: Context, config: Config): void {
     maxTrialSteps: number
     maxTrialTokens: number
   }
+  const budget = config.budget as {
+    maxCostPerCycle: number
+    dailyBudget: number
+  }
+
+  // Shared cost ledger for the lifetime of this plugin instance.
+  const costLedger = new CostLedger()
 
   // Mount services. Startup failures (config or domain open errors) reject
   // the returned fiber; surface them as logged errors instead of letting them
@@ -216,6 +269,8 @@ export function apply(ctx: Context, config: Config): void {
                 maxTrialSteps: validation.maxTrialSteps,
                 maxTrialTokens: validation.maxTrialTokens,
               },
+              budget,
+              costLedger,
             })
             trackApplied(watch, result, signal.key)
             injected.logger.info(
@@ -231,6 +286,8 @@ export function apply(ctx: Context, config: Config): void {
               maxPromptChars: proposal.maxPromptChars,
               maxMutations: proposal.maxProposalsPerTrigger,
               maxObservations: proposal.maxEpisodesPerProposal,
+              budget,
+              costLedger,
             })
           }
         })().catch((error: unknown) => {

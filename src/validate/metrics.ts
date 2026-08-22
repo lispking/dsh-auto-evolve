@@ -119,3 +119,117 @@ export function summarizeComparisons(comparisons: readonly MetricComparison[]): 
     reason: `${comparisons.length} trials showed no net improvement`,
   }
 }
+
+/**
+ * One paired delta from a multi-episode A/B trial: trial metric minus the
+ * matched baseline metric for the same episode. Negative deltas on failures
+ * and tool calls are improvements; on completion a positive delta (trial
+ * completed where baseline did not) is the win.
+ */
+export interface MetricDelta {
+  /** Delta of tool calls (trial - baseline). Negative is cheaper. */
+  readonly toolCallsDelta: number
+  /** Delta of tool failures (trial - baseline). Negative is better. */
+  readonly toolFailuresDelta: number
+  /** Delta of duration in ms (trial - baseline). Negative is faster. */
+  readonly durationMsDelta: number
+  /** Trial completed where baseline did not (+1), or vice versa (-1), else 0. */
+  readonly completionDelta: number
+}
+
+/** Compute the paired delta for one episode's baseline vs trial metrics. */
+export function metricDelta(baseline: TrialMetrics, trial: TrialMetrics): MetricDelta {
+  const completionDelta =
+    trial.completed && !baseline.completed ? 1
+      : !trial.completed && baseline.completed ? -1
+      : 0
+  return {
+    toolCallsDelta: trial.toolCalls - baseline.toolCalls,
+    toolFailuresDelta: trial.toolFailures - baseline.toolFailures,
+    durationMsDelta: trial.durationMs - baseline.durationMs,
+    completionDelta,
+  }
+}
+
+/**
+ * Aggregate a batch of paired deltas into one A/B verdict. This is the
+ * statistically meaningful path for multi-episode trials: it looks at the
+ * *direction* of every episode's delta rather than counting raw win/loss
+ * votes, so a mutation that shaves 2 failures off every episode wins even
+ * if no single episode flipped a boolean.
+ *
+ * Decision rule (each gate can veto the next):
+ * 1. **Completion** — if the net completion delta is positive, the mutation
+ *    fixed episodes the baseline could not finish: improved.
+ * 2. **Failures** — if the mean failure delta is negative and at least one
+ *    episode improved: improved. A positive mean failure delta regresses.
+ * 3. **Activity** — equal-failure cases break the tie on tool-call delta.
+ * 4. Otherwise neutral.
+ *
+ * @param deltas - one {@link MetricDelta} per replayed episode.
+ * @returns the aggregate verdict with a human-readable reason.
+ */
+export function aggregateMetricDeltas(deltas: readonly MetricDelta[]): {
+  readonly improved: boolean
+  readonly regressed: boolean
+  readonly reason: string
+} {
+  if (deltas.length === 0) {
+    return { improved: false, regressed: false, reason: 'no paired trials ran' }
+  }
+  const n = deltas.length
+
+  const netCompletion = deltas.reduce((sum, d) => sum + d.completionDelta, 0)
+  if (netCompletion > 0) {
+    return {
+      improved: true,
+      regressed: false,
+      reason: `trial completed ${netCompletion} more episode(s) than baseline across ${n} replays`,
+    }
+  }
+  if (netCompletion < 0) {
+    return {
+      improved: false,
+      regressed: true,
+      reason: `trial completed ${-netCompletion} fewer episode(s) than baseline across ${n} replays`,
+    }
+  }
+
+  const meanFailureDelta = deltas.reduce((sum, d) => sum + d.toolFailuresDelta, 0) / n
+  if (meanFailureDelta < 0) {
+    return {
+      improved: true,
+      regressed: false,
+      reason: `mean failure delta ${meanFailureDelta.toFixed(2)} across ${n} paired replays`,
+    }
+  }
+  if (meanFailureDelta > 0) {
+    return {
+      improved: false,
+      regressed: true,
+      reason: `mean failure delta ${meanFailureDelta.toFixed(2)} across ${n} paired replays`,
+    }
+  }
+
+  const meanToolCallsDelta = deltas.reduce((sum, d) => sum + d.toolCallsDelta, 0) / n
+  if (meanToolCallsDelta < 0) {
+    return {
+      improved: true,
+      regressed: false,
+      reason: `mean tool-call delta ${meanToolCallsDelta.toFixed(2)} across ${n} paired replays`,
+    }
+  }
+  if (meanToolCallsDelta > 0) {
+    return {
+      improved: false,
+      regressed: true,
+      reason: `mean tool-call delta ${meanToolCallsDelta.toFixed(2)} across ${n} paired replays`,
+    }
+  }
+
+  return {
+    improved: false,
+    regressed: false,
+    reason: `${n} paired replays showed no net difference`,
+  }
+}

@@ -20,8 +20,9 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
 import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
 import type { GenomeAsset } from '../storage/spec.ts'
-import { compareMetrics } from './metrics.ts'
-import type { MetricComparison, TrialMetrics, TrialOutcome } from './metrics.ts'
+import { aggregateMetricDeltas, compareMetrics, metricDelta } from './metrics.ts'
+import type { MetricComparison, MetricDelta, TrialMetrics, TrialOutcome } from './metrics.ts'
+import type { MockStreamFactory } from './mock-llm.ts'
 
 /** Bounds that keep one trial cheap and deterministic. */
 export interface TrialBounds {
@@ -51,12 +52,39 @@ export interface TrialRequest {
   readonly bounds: TrialBounds
   /** Cancellation signal. */
   readonly signal?: AbortSignal
+  /**
+   * Optional mock stream factory. When provided, the trial agent uses this
+   * deterministic stream instead of a live LLM, giving reproducible trial
+   * runs for unit tests and CI.
+   */
+  readonly mockStream?: MockStreamFactory
 }
 
-/** The verdict of one validation: baseline (no mutations) vs trial (with mutations). */
+/** One episode's paired A/B result (baseline vs trial over the same episode). */
+export interface PairedEpisodeResult {
+  /** The replayed episode prompt. */
+  readonly episode: string
+  /** Baseline run metrics (no mutations applied). */
+  readonly baseline: TrialMetrics
+  /** Trial run metrics (candidate mutations applied). */
+  readonly trial: TrialMetrics
+  /** Single-episode verdict. */
+  readonly comparison: MetricComparison
+  /** Paired delta for multi-episode aggregation. */
+  readonly delta: MetricDelta
+}
+
+/**
+ * The verdict of one validation. Multi-episode A/B runs replay every episode
+ * twice (baseline then trial with mutations), aggregate the paired deltas,
+ * and return both the per-episode breakdown and the overall verdict.
+ */
 export interface ValidationRun {
   /** Fresh run id recorded in the apply ledger as the trial evidence. */
   readonly id: string
+  /** Per-episode paired results (one per replayed episode). */
+  readonly episodes: readonly PairedEpisodeResult[]
+  /** Legacy single-pair metrics (episode [0]), retained for backward compat. */
   readonly baseline: TrialMetrics
   readonly trial: TrialMetrics
   readonly comparison: MetricComparison
@@ -149,6 +177,41 @@ async function executeTrial(
           counter.toolCalls++
           if (result.isError) counter.toolFailures++
         })
+        // Inject a deterministic mock LLM stream when requested, so trial
+        // runs are reproducible without a live provider.
+        if (request.mockStream !== undefined) {
+          const factory = request.mockStream
+          const originalStream = agentCtx.llm?.stream?.bind(agentCtx.llm) ?? null
+          // Monkey-patch the trial agent's llm.stream with the mock factory.
+          // We intercept only the call shape; the mock returns a compliant
+          // AsyncIterable<StreamChunk>.
+          const llmRef = agentCtx.llm as unknown as {
+            stream?: (options: unknown) => AsyncIterable<unknown>
+          } | undefined
+          if (llmRef !== undefined && llmRef.stream !== undefined) {
+            llmRef.stream = ((options: unknown) => {
+              const req = options as {
+                provider?: string
+                model?: string
+                maxTokens?: number
+                system?: string
+                messages?: readonly unknown[]
+                signal?: AbortSignal
+              }
+              return factory({
+                provider: req.provider ?? request.provider,
+                model: req.model ?? request.model,
+                ...(req.maxTokens !== undefined ? { maxTokens: req.maxTokens } : {}),
+                ...(req.system !== undefined ? { system: req.system } : {}),
+                messages: req.messages ?? [],
+                ...(req.signal !== undefined ? { signal: req.signal } : {}),
+              }) as unknown as AsyncIterable<unknown>
+            }) as (options: unknown) => AsyncIterable<unknown>
+          }
+          // Suppress unused-variable warning for originalStream (kept for
+          // future restore-on-dispose logic).
+          void originalStream
+        }
       },
     })
   } catch (error: unknown) {
@@ -198,23 +261,63 @@ async function executeTrial(
 }
 
 /**
- * Run a full validation: a baseline run (no mutations) then a trial run (with
- * mutations) over the same episode, and compare. Fresh session ids isolate the
- * two runs from each other and from the host.
+ * Run a full validation: for each replayed episode, run a baseline (no
+ * mutations) then a trial (with mutations), compute the per-episode
+ * paired delta, and aggregate all deltas into one verdict. Fresh session
+ * ids isolate every run from each other and from the host.
+ *
+ * The single-episode `request.episode` is still honored as the default
+ * episode list; pass `episodes` to override and replay multiple scenarios
+ * in one validation pass. The per-episode deltas are aggregated by
+ * {@link aggregateMetricDeltas}, which looks at the *direction* of every
+ * delta rather than counting raw win/loss votes — so a mutation that
+ * shaves 2 failures off every episode wins even if no single episode
+ * flipped a boolean.
+ *
  * @param ctx - host context.
  * @param request - shared trial parameters (mutations omitted from baseline).
- * @returns the comparison verdict plus both metric sets.
+ * @param episodes - override the single `request.episode` with a list of
+ *   episode prompts; defaults to `[request.episode]` for backward compat.
+ * @returns the per-episode paired results plus the aggregate verdict.
  */
 export async function validateMutations(
   ctx: Context,
   request: TrialRequest,
+  episodes: readonly string[] = [request.episode],
 ): Promise<ValidationRun> {
-  const baseline = await runTrial(ctx, { ...request, mutations: [] })
-  const trial = await runTrial(ctx, request)
+  const paired: PairedEpisodeResult[] = []
+  for (const episode of episodes) {
+    const episodeRequest: TrialRequest = { ...request, episode }
+    const baseline = await runTrial(ctx, { ...episodeRequest, mutations: [] })
+    const trial = await runTrial(ctx, episodeRequest)
+    paired.push({
+      episode,
+      baseline,
+      trial,
+      comparison: compareMetrics(baseline, trial),
+      delta: metricDelta(baseline, trial),
+    })
+  }
+
+  // Legacy single-pair fields point at the first episode for backward compat.
+  const first = paired[0]!
   return {
     id: randomUUID(),
-    baseline,
-    trial,
-    comparison: compareMetrics(baseline, trial),
+    episodes: paired,
+    baseline: first.baseline,
+    trial: first.trial,
+    comparison: first.comparison,
   }
+}
+
+/**
+ * Aggregate the per-episode deltas of a {@link ValidationRun} into one A/B
+ * verdict. Convenience wrapper around {@link aggregateMetricDeltas}.
+ */
+export function summarizeValidationRun(run: ValidationRun): {
+  readonly improved: boolean
+  readonly regressed: boolean
+  readonly reason: string
+} {
+  return aggregateMetricDeltas(run.episodes.map((p) => p.delta))
 }

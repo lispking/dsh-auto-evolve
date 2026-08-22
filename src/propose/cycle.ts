@@ -13,7 +13,11 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SelfEvolveStore } from '../storage/store.ts'
 import type { EvolvableKind, GenomeAsset } from '../storage/spec.ts'
+import { CostLedger } from './budget.ts'
+import type { BudgetConfig } from './budget.ts'
+import { estimateProposalTokens } from './budget.ts'
 import { generateProposal, resolveProposalTarget } from './engine.ts'
+import { dedupMutations } from './fingerprint.ts'
 import { mutationAssetId } from './operators.ts'
 
 /** Options for one proposal cycle. */
@@ -32,6 +36,18 @@ export interface CycleOptions {
   readonly maxObservations: number
   /** Abort the whole cycle when triggered. */
   readonly signal?: AbortSignal
+  /**
+   * Cost/budget gate. When provided, the cycle estimates the token cost
+   * before the LLM call and skips (logging a warning) when the estimate
+   * exceeds the per-cycle or per-day cap.
+   */
+  readonly budget?: BudgetConfig | undefined
+  /**
+   * Shared cost ledger (one per plugin instance). When omitted a fresh
+   * ledger is created for this cycle — useful for tests but not for
+   * production where the daily tally must persist across cycles.
+   */
+  readonly costLedger?: CostLedger | undefined
 }
 
 /**
@@ -63,6 +79,22 @@ export async function runProposalCycle(
       return 0
     }
 
+    // Budget gate: estimate the proposal token cost and skip the call when
+    // the per-cycle or per-day cap is exceeded.
+    const ledger = options.costLedger ?? new CostLedger()
+    if (options.budget !== undefined) {
+      const estimate = estimateProposalTokens(options.maxPromptChars, options.maxTokens)
+      const verdict = ledger.check(estimate, options.budget)
+      if (!verdict.allowed) {
+        ctx.logger.warn(
+          `[self-evolve] proposal cycle skipped: ${verdict.rejection} ` +
+          `(cycle ${verdict.cycleSpent}/${options.budget.maxCostPerCycle ?? 0}, ` +
+          `day ${verdict.dailySpent}/${options.budget.dailyBudget ?? 0})`,
+        )
+        return 0
+      }
+    }
+
     const genome = store.listAssets()
     const observations = store.listObservations(options.maxObservations)
     const proposal = await generateProposal(ctx, genome, observations, {
@@ -73,13 +105,28 @@ export async function runProposalCycle(
       maxMutations: options.maxMutations,
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
     })
+
+    // Record the actual token usage after the call. The harness reports
+    // usage via the stream; for simplicity we record the pre-call estimate
+    // when actual usage is unavailable, which still bounds daily spend.
+    ledger.record(estimateProposalTokens(options.maxPromptChars, options.maxTokens))
     if (proposal === null) {
       ctx.logger.warn('[self-evolve] proposal cycle produced no valid proposal')
       return 0
     }
 
+    // Dedup against existing candidates: drop mutations whose fingerprint
+    // already matches a pending candidate, so we never re-trial the same
+    // patch while the previous one is still awaiting validation.
+    const { kept, dropped } = dedupMutations(proposal, genome)
+    if (dropped.length > 0) {
+      ctx.logger.info(
+        `[self-evolve] proposal ${proposal.id} dropped ${dropped.length} duplicate mutation(s)`,
+      )
+    }
+
     let materialized = 0
-    for (const mutation of proposal.mutations) {
+    for (const mutation of kept) {
       const id = mutationAssetId(mutation)
       const existing = store.getAsset(id)
       const version = existing === undefined ? 0 : existing.version + 1

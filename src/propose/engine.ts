@@ -17,6 +17,8 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { proposalSchema } from './operators.ts'
 import type { Proposal } from './operators.ts'
 import type { GenomeAsset, ObservationRecord } from '../storage/spec.ts'
+import { autoStrategy, strategyPrompt } from './strategies.ts'
+import type { ProposalStrategy } from './strategies.ts'
 
 /** Options controlling one proposal run. */
 export interface ProposalOptions {
@@ -32,32 +34,11 @@ export interface ProposalOptions {
   readonly maxMutations: number
   /** Abort the proposal call when triggered. */
   readonly signal?: AbortSignal
-}
-
-/** The system instruction framing the proposal task. */
-function systemPrompt(maxMutations: number): string {
-  return [
-    'You are the self-improvement engine of a coding agent harness.',
-    'You propose changes to YOUR OWN small set of evolvable assets.',
-    'You never change user code or sessions — only assets owned by the plugin:',
-    'skills (reusable agent skill markdown), post-processors (tool-result',
-    'rewriting rules), prompt-sections (system prompt text), guard-policies',
-    '(JSON policy rules).',
-    '',
-    `Output exactly ONE JSON object with this shape (no markdown fences, no commentary):`,
-    `{"rationale":"...","expectedImpact":"...","mutations":[`,
-    `{"operator":"add|patch|retire","kind":"skill|post-processor|prompt-section|guard-policy",`,
-    `"targetId":"<kind>:<name> or empty for add","name":"kebab-case","description":"one line",`,
-    `"content":"full body"}]}`,
-    '',
-    'Rules:',
-    `- emit at most ${maxMutations} mutation(s)`,
-    '- operator "add" requires an empty targetId and a fresh name',
-    '- operator "patch"/"retire" requires targetId matching an existing asset',
-    '- names must be kebab-case (lowercase letters, digits, hyphens)',
-    '- content must be the complete new body, never a diff or placeholder',
-    '- base every change on the observations below; do not invent problems',
-  ].join('\n')
+  /**
+   * Proposal strategy pinning the system prompt's risk posture. When
+   * omitted, {@link autoStrategy} picks one from the observation mix.
+   */
+  readonly strategy?: ProposalStrategy
 }
 
 /** Render one genome asset for the prompt (compact). */
@@ -126,12 +107,19 @@ export async function generateProposal(
     observationsText,
   ].join('\n')
 
+  // Resolve the proposal strategy: explicit pin wins, else auto-pick
+  // from the observation mix.
+  const strategy: ProposalStrategy = options.strategy ?? autoStrategy(
+    observations.map((r) => r.kind),
+  )
+  const promptFactory = strategyPrompt(strategy)
+
   const stream = ctx.llm.stream({
     provider: options.provider,
     model: options.model,
     maxTokens: options.maxTokens,
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
-    system: systemPrompt(options.maxMutations),
+    system: promptFactory(options.maxMutations),
     messages: [
       createUserMessage({
         content: [{ type: 'text', text: userText.slice(0, options.maxPromptChars) }],

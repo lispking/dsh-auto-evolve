@@ -17,6 +17,7 @@ export const EVOLVABLE_KINDS = [
   'post-processor',
   'prompt-section',
   'guard-policy',
+  'tool-wrapper',
 ] as const
 export type EvolvableKind = (typeof EVOLVABLE_KINDS)[number]
 
