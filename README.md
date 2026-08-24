@@ -94,8 +94,27 @@ The bundle applies a default config; to change it, override the row in your own 
 | Mode | Behavior |
 |---|---|
 | `observe` | Collect signals, fire triggers, **never propose**. Safe default. |
-| `propose` | Generate and persist candidate mutations when thresholds cross. Candidates await validation/application (manual or via the exported API). |
+| `propose` | Generate and persist candidate mutations when thresholds cross. Candidates await validation/application — manual approval via the `evolve_apply` operator tool, or via the exported API. |
 | `auto-apply` | Run the full loop: observe → propose → validate → apply verified mutations automatically, with automatic rollback when the same failure key recurs after an apply (regression watch). After repeated stalled cycles the loop pauses (convergence) and each failed/rolled-back key enters a cooldown, so it cannot thrash propose → fail → propose. The regression watch is persisted, so applied fixes stay monitored across plugin restarts. |
+
+### Operator tools
+
+The plugin registers a small set of **agent-callable tools** (dsh exposes no
+chat-command framework; in an agent harness the operator surface is tools).
+Ask the agent to inspect or drive the loop — no manual API calls needed:
+
+| Tool | Params | What it does |
+|---|---|---|
+| `evolve_status` | — | Health summary: mode, generation, asset status counts, ledger/observation totals, convergence pause state, regression watch size. |
+| `evolve_candidates` | — | List candidate mutations awaiting validation or manual application. |
+| `evolve_apply` | `assetId` | Apply one candidate immediately (manual approval), registering it live. |
+| `evolve_rollback` | `assetId` | Roll back an applied asset, restoring its previous content as a candidate. |
+| `evolve_cycle` | — | Trigger one cycle manually: materialize candidates (propose) or run the full validate-and-apply loop (auto-apply). |
+
+Availability by mode: all five tools are registered in every mode;
+`evolve_apply` / `evolve_rollback` need the applier (mounted in `propose` and
+`auto-apply`), and `evolve_cycle` needs an LLM provider and rejects in
+`observe` mode.
 
 ### Configuration
 
