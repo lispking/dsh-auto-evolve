@@ -21,7 +21,7 @@
 |---|---|---|
 | **观察** | `src/observe` | 监听 `tools/result` 与 `agent/request-error`;将去重信号(工具失败、无进展的重复调用、请求错误)写入持久化观察表;阈值被越过时触发 `onTrigger`。 |
 | **提议** | `src/propose` | 有界周期快照基因组 + 近期观察,以严格提示词调用 `ctx.llm.stream()`,并用封闭变异词表(`add` / `patch` / `retire`,作用于 `skill` / `post-processor` / `prompt-section` / `guard-policy`)校验模型输出。任何解析或 schema 校验失败都会被丢弃——绝不应用。 |
-| **验证** | `src/validate` | 在一个全新作用域子 agent(`ctx.agents.create` + `setup`)中重放失败片段:一次不带候选变异(基线),一次带变异(试运行),然后对比指标:完成度、工具失败数、工具调用成本。 |
+| **验证** | `src/validate` | 在一个全新作用域子 agent(`ctx.agents.create` + `setup`)中重放失败片段:一次不带候选变异(基线),一次带变异(试运行),然后对比指标:完成度、工具失败数、工具调用成本。所有有运行时贡献的 kind —— skill、tool-wrapper、guard-policy、post-processor —— 都通过共享的变异应用器(与线上应用同一套代码,验证即部署)进行试运行;prompt-section 候选只记录、不自动应用。 |
 | **应用** | `src/apply` | 将已验证候选提升为在线基因组:skill 通过 `ctx.skills.register` 注册到插件上下文(立即可见),台账记录本次应用并保存上一版内容,disposer 保留用于回滚。 |
 | **回滚** | `src/apply` | 注销在线贡献,将父版本内容恢复为新的候选,写入 `rollback` 台账条目。插件销毁时所有在线注册被拆除。 |
 
