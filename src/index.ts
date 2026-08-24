@@ -16,6 +16,7 @@ import SelfEvolveStore from './storage/store.ts'
 import SelfEvolveApplier from './apply/applier.ts'
 import { CostLedger } from './propose/budget.ts'
 import { installObservations } from './observe/collector.ts'
+import { installOperatorTools } from './control/tools.ts'
 import { runProposalCycle } from './propose/cycle.ts'
 import { resolveProposalTarget } from './propose/engine.ts'
 import {
@@ -54,6 +55,8 @@ export type {
 } from './storage/spec.ts'
 export { installObservations } from './observe/collector.ts'
 export type { ObservationConfig, TriggerSignal } from './observe/collector.ts'
+export { installOperatorTools } from './control/tools.ts'
+export type { OperatorToolOptions } from './control/tools.ts'
 export { checkThresholds } from './observe/threshold.ts'
 export type { ThresholdConfig } from './observe/threshold.ts'
 export { generateProposal, resolveProposalTarget } from './propose/engine.ts'
@@ -239,14 +242,16 @@ export function apply(ctx: Context, config: Config): void {
     ctx.logger.error(`[self-evolve] applier failed to start: ${String(error)}`)
   })
 
-  // Observation layer. The dependency list is mode-aware so the framework
-  // waits for exactly the services each mode consumes: observe needs only the
-  // store, propose adds the LLM, auto-apply adds agents + skills + applier.
+  // Observation + operator-tool layer. The dependency list is mode-aware so
+  // the framework waits for exactly the services each mode consumes: observe
+  // needs only the store (+ tool runtime for the operator tools), propose
+  // adds the LLM and the applier (manual apply via tools), auto-apply adds
+  // agents + skills for the sandboxed trial replay.
   const observationDeps = mode === 'auto-apply'
-    ? ['selfEvolveStore', 'selfEvolveApplier', 'llm', 'agents', 'skills']
+    ? ['selfEvolveStore', 'selfEvolveApplier', 'llm', 'agents', 'skills', 'tools']
     : mode === 'propose'
-      ? ['selfEvolveStore', 'llm']
-      : ['selfEvolveStore']
+      ? ['selfEvolveStore', 'selfEvolveApplier', 'llm', 'skills', 'tools']
+      : ['selfEvolveStore', 'tools']
 
   ctx.inject(observationDeps, (injected) => {
     const store = injected.selfEvolveStore
@@ -368,5 +373,32 @@ export function apply(ctx: Context, config: Config): void {
         })
       },
     )
+
+    // Operator control plane: agent-callable management tools. Mounted in
+    // every mode; apply/rollback/cycle degrade gracefully when their backing
+    // service (applier / llm) is not part of the current mode's deps.
+    installOperatorTools(ctx, {
+      mode,
+      store,
+      applier: mode === 'observe' ? undefined : injected.selfEvolveApplier,
+      convergence,
+      cooldown,
+      watch,
+      windowMs: observation.windowMs,
+      proposal: {
+        maxProposalsPerTrigger: proposal.maxProposalsPerTrigger,
+        maxEpisodesPerProposal: proposal.maxEpisodesPerProposal,
+        maxPromptChars: proposal.maxPromptChars,
+        maxTokens: proposal.maxTokens,
+      },
+      validation: {
+        maxTrialMs: validation.maxTrialMs,
+        maxToolCalls: validation.maxToolCalls,
+        maxTrialSteps: validation.maxTrialSteps,
+        maxTrialTokens: validation.maxTrialTokens,
+      },
+      budget,
+      costLedger,
+    })
   })
 }
