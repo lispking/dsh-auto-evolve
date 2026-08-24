@@ -36,6 +36,18 @@ export { SelfEvolveStore } from './storage/store.ts'
 export { SelfEvolveApplier } from './apply/applier.ts'
 export type { ApplyResult, RollbackResult } from './apply/applier.ts'
 export {
+  applyMutation,
+  isTrialExercisable,
+  parseGuardPolicy,
+  parsePostProcessor,
+  parseToolWrapper,
+} from './apply/mutation.ts'
+export type {
+  GuardPolicyConfig,
+  PostProcessorConfig,
+  ToolWrapperConfig,
+} from './apply/mutation.ts'
+export {
   genomeAssetSchema,
   genomeStateSchema,
   ledgerEntrySchema,

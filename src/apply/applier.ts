@@ -1,11 +1,13 @@
 /**
  * Application layer for dsh-auto-evolve.
  *
- * Turns validated candidate assets into LIVE genome entries: skills are
- * registered on the plugin context via `ctx.skills.register` (immediately
- * visible to the model), the genome record is promoted from
- * `candidate` to `applied`, and the ledger records the mutation with the
- * previous content captured so rollback can restore it exactly.
+ * Turns validated candidate assets into LIVE genome entries: each kind is
+ * applied through the shared mutation applier (`applyMutation`), so skills
+ * register on `ctx.skills`, tool wrappers and post-processors wrap
+ * `tools/execute`, and guard policies gate `ctx.tools` — all immediately
+ * visible at runtime. The genome record is promoted from `candidate` to
+ * `applied`, and the ledger records the mutation with the previous content
+ * captured so rollback can restore it exactly.
  *
  * Every applied asset keeps its live disposer. Rollback unregisters the live
  * contribution, restores the parent content as a new candidate (ready for the
@@ -15,9 +17,9 @@
  */
 
 import { Context, Service } from '@deepseek-ai/cordis'
-import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
 import type { SelfEvolveStore } from '../storage/store.ts'
 import type { GenomeAsset } from '../storage/spec.ts'
+import { applyMutation } from './mutation.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
@@ -94,29 +96,13 @@ export class SelfEvolveApplier extends Service {
     if (asset === undefined || asset.status !== 'candidate') return undefined
 
     this.disposeLive(assetId) // a stale live registration must not outlive a re-apply
-    if (asset.kind === 'skill') {
-      const registration: SkillRegistration = {
-        name: asset.name,
-        description: asset.description,
-        content: asset.content,
-        source: 'runtime',
-        invocation: { modelInvocable: true, userInvocable: false },
-      }
-      // Runtime-registered skills are immediately visible to the model; the
-      // registry resolves duplicate names by provider rank.
-      const disposer = this.ctx.skills.register(registration)
-      this.disposers.set(assetId, disposer)
-    } else if (asset.kind === 'tool-wrapper') {
-      // tool-wrapper content is JSON: { tool, retries?, validate?, fallback? }
-      // We register a tools/execute wrapper that intercepts calls to the
-      // named tool and applies retry-on-error, argument validation, and a
-      // fallback result. The disposer removes the wrapper on rollback.
-      const dispose = this.registerToolWrapper(asset)
-      this.disposers.set(assetId, dispose)
-    }
-    // Other kinds (post-processor / prompt-section / guard-policy) are
-    // recorded in the genome but have no live contribution in this release;
-    // the ledger still records the apply so the state machine stays honest.
+    // Apply the live contribution through the shared mutation applier — the
+    // same code the trial replay uses, so validation == deployment.
+    // prompt-section has no system-prompt injection surface in this release;
+    // it stays record-only, and the ledger still records the apply so the
+    // state machine stays honest.
+    const disposer = applyMutation(this.ctx, asset)
+    if (disposer !== undefined) this.disposers.set(assetId, disposer)
 
     const promoted: GenomeAsset = {
       ...asset,
@@ -199,117 +185,6 @@ export class SelfEvolveApplier extends Service {
       dispose()
       this.disposers.delete(assetId)
     }
-  }
-
-  /**
-   * Register a tool-wrapper as a live `tools/execute` interceptor.
-   *
-   * The wrapper content is JSON with this shape:
-   * ```
-   * { "tool": "<tool-name>",
-   *   "retries"?: number,           // re-call on error this many times
-   *   "validate"?: {                // reject arguments failing this JSON Schema
-   *     "schema": <json-schema>,
-   *     "message"?: string
-   *   },
-   *   "fallback"?: {                // return this on persistent failure
-   *     "result": <json>,
-   *     "isError"?: boolean
-   *   } }
-   * ```
-   *
-   * The disposer returned removes the interceptor so rollback can cleanly
-   * revert the live behavior.
-   */
-  private registerToolWrapper(asset: GenomeAsset): () => void {
-    const config = this.parseToolWrapper(asset.content)
-    const ctx = this.ctx
-    // Listen on the tools/execute waterfall. We only intercept calls whose
-    // tool name matches config.tool; all others pass through unchanged.
-    const listener = async (
-      exec: Readonly<{ name: string; arguments: unknown }>,
-      next: () => Promise<{ isError: boolean; result?: unknown; error?: { message: string } }>,
-    ): Promise<{ isError: boolean; result?: unknown; error?: { message: string } }> => {
-      if (exec.name !== config.tool) return next()
-      // Argument validation gate.
-      if (config.validate !== undefined) {
-        const ok = this.validateArguments(exec.arguments, config.validate.schema)
-        if (!ok) {
-          return {
-            isError: true,
-            error: { message: config.validate.message ?? 'argument validation failed' },
-          }
-        }
-      }
-      // Retry-on-error with fallback.
-      const maxAttempts = (config.retries ?? 0) + 1
-      const attempt = (remaining: number): ReturnType<typeof next> =>
-        next().then((r) => {
-          if (r.isError && remaining > 0) return attempt(remaining - 1)
-          if (r.isError && config.fallback !== undefined) {
-            return {
-              isError: config.fallback.isError ?? false,
-              result: config.fallback.result,
-            }
-          }
-          return r
-        })
-      return attempt(maxAttempts - 1)
-    }
-    const disposer = ctx.on('tools/execute', listener as never)
-    return disposer
-  }
-
-  /** Parse and validate a tool-wrapper JSON config body. */
-  private parseToolWrapper(content: string): {
-    readonly tool: string
-    readonly retries?: number
-    readonly validate?: { readonly schema: unknown; readonly message?: string }
-    readonly fallback?: { readonly result: unknown; readonly isError?: boolean }
-  } {
-    const parsed = JSON.parse(content) as {
-      tool?: string
-      retries?: number
-      validate?: { schema?: unknown; message?: string }
-      fallback?: { result?: unknown; isError?: boolean }
-    }
-    if (typeof parsed.tool !== 'string' || parsed.tool.length === 0) {
-      throw new Error('tool-wrapper: missing or invalid "tool" field')
-    }
-    const result: {
-      tool: string
-      retries?: number
-      validate?: { schema: unknown; message?: string }
-      fallback?: { result: unknown; isError?: boolean }
-    } = { tool: parsed.tool }
-    if (parsed.retries !== undefined) result.retries = parsed.retries
-    if (parsed.validate !== undefined && parsed.validate.schema !== undefined) {
-      result.validate = {
-        schema: parsed.validate.schema,
-        ...(parsed.validate.message !== undefined ? { message: parsed.validate.message } : {}),
-      }
-    }
-    if (parsed.fallback !== undefined && parsed.fallback.result !== undefined) {
-      result.fallback = {
-        result: parsed.fallback.result,
-        ...(parsed.fallback.isError !== undefined ? { isError: parsed.fallback.isError } : {}),
-      }
-    }
-    return result
-  }
-
-  /** Minimal JSON Schema argument validation (type + required only). */
-  private validateArguments(args: unknown, schema: unknown): boolean {
-    if (schema === null || typeof schema !== 'object') return true
-    const s = schema as { type?: string; required?: string[]; properties?: Record<string, unknown> }
-    if (s.type === 'object' && (args === null || typeof args !== 'object')) return false
-    if (s.required !== undefined && args !== null && typeof args === 'object') {
-      const obj = args as Record<string, unknown>
-      for (const key of s.required) {
-        if (obj[key] === undefined) return false
-      }
-    }
-    return true
   }
 
   /** Whether an asset currently has a live contribution (diagnostics/tests). */

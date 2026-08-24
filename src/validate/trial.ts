@@ -17,8 +17,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { SkillRegistration } from '@deepseek-ai/dsh-skill'
 import type { ToolExecution, ToolExecutionResult } from '@deepseek-ai/dsh-tools'
+import { applyMutation } from '../apply/mutation.ts'
 import type { GenomeAsset } from '../storage/spec.ts'
 import { aggregateMetricDeltas, compareMetrics, metricDelta } from './metrics.ts'
 import type { MetricComparison, MetricDelta, TrialMetrics, TrialOutcome } from './metrics.ts'
@@ -46,7 +46,7 @@ export interface TrialRequest {
   readonly model: string
   /** The replayed episode: the failing scenario phrased as a user prompt. */
   readonly episode: string
-  /** Candidate assets applied inside the trial (skill bodies are registered). */
+  /** Candidate assets applied inside the trial via the shared mutation applier. */
   readonly mutations: readonly GenomeAsset[]
   /** Bounds for this run. */
   readonly bounds: TrialBounds
@@ -101,10 +101,10 @@ function initialCounter(): TrialCounter {
 }
 
 /**
- * Run one sandboxed trial. The candidate skill mutations are registered on
- * the trial agent's scoped context; other asset kinds are skipped (they are
- * not exercisable inside a skill-level replay — recorded in the returned
- * metrics only via the tool counters).
+ * Run one sandboxed trial. Candidate mutations are applied on the trial
+ * agent's scoped context through the shared mutation applier — the same code
+ * the live apply path uses, so validation == deployment. prompt-section
+ * candidates have no replay contribution and are skipped.
  * @param ctx - host context carrying `agents` (the loop must be loaded).
  * @param request - trial request.
  * @returns the observed metrics; the run is `timed-out`/`error` when the cap
@@ -150,17 +150,10 @@ async function executeTrial(
       },
       signal: controller.signal,
       setup: (agentCtx) => {
-        // Compose the trial world: candidate skills, tool narrowing, counters.
+        // Compose the trial world: candidate mutations (same applier the live
+        // path uses, so validation == deployment), tool narrowing, counters.
         for (const mutation of request.mutations) {
-          if (mutation.kind !== 'skill') continue // only skills are exercisable here
-          const registration: SkillRegistration = {
-            name: mutation.name,
-            description: mutation.description,
-            content: mutation.content,
-            source: 'runtime',
-            invocation: { modelInvocable: true, userInvocable: false },
-          }
-          agentCtx.skills.register(registration)
+          applyMutation(agentCtx, mutation)
         }
         if (request.bounds.toolAllow !== undefined && request.bounds.toolAllow.length > 0) {
           agentCtx.tools.restrict({ allow: [...request.bounds.toolAllow] })

@@ -7,8 +7,10 @@
  *      (snapshotting the pre-cycle candidate ids so only *fresh* mutations
  *      from this cycle are validated).
  *   2. **Validate** — replay the failing episode in a sandboxed trial for
- *      each fresh candidate (only `skill` assets are exercisable in a
- *      skill-level replay; other kinds are recorded but not auto-applied).
+ *      each fresh candidate. Every kind with a runtime contribution (skill,
+ *      tool-wrapper, guard-policy, post-processor) is exercised through the
+ *      shared mutation applier; prompt-section candidates are recorded but
+ *      not auto-applied.
  *   3. **Apply** — promote a candidate only when the trial strictly improved
  *      over the baseline (`comparison.improved`); regressed or neutral
  *      candidates stay in the genome for manual review.
@@ -22,6 +24,7 @@
 import type { Context } from '@deepseek-ai/cordis'
 import type { SelfEvolveStore } from '../storage/store.ts'
 import type { SelfEvolveApplier } from '../apply/applier.ts'
+import { isTrialExercisable } from '../apply/mutation.ts'
 import type { GenomeAsset } from '../storage/spec.ts'
 import { CostLedger } from '../propose/budget.ts'
 import type { BudgetConfig } from '../propose/budget.ts'
@@ -112,9 +115,9 @@ export async function runAutoApplyCycle(
   const rejected: string[] = []
   const skipped: string[] = []
   for (const candidate of fresh) {
-    if (candidate.kind !== 'skill') {
-      // Only skills are exercisable inside a skill-level replay; other kinds
-      // stay candidates for manual validation/application.
+    if (!isTrialExercisable(candidate.kind)) {
+      // prompt-section candidates have no runtime contribution to replay in
+      // this release; they stay candidates for manual validation/application.
       skipped.push(candidate.id)
       continue
     }
