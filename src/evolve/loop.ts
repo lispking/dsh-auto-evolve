@@ -164,17 +164,25 @@ export function classifyCycle(
 export interface ConvergenceConfig {
   /**
    * How many consecutive non-productive cycles (rejected / skipped /
-   * empty / rolled-back) before the loop auto-degrades. Default 3.
+   * empty / rolled-back) before the loop auto-pauses. Default 3.
    */
   readonly stallThreshold?: number
+  /**
+   * How long (ms) the loop stays paused once the stall threshold is
+   * reached. When the pause expires the stall counter resets and auto-apply
+   * resumes. Default 30 minutes.
+   */
+  readonly stallPauseMs?: number
 }
 
 /** The verdict the convergence tracker returns after each cycle. */
 export interface ConvergenceVerdict {
-  /** Whether the loop should auto-degrade from `auto-apply` to `propose`. */
-  readonly shouldDegrade: boolean
+  /** Whether the loop should pause auto-apply right now (threshold just crossed). */
+  readonly shouldPause: boolean
   /** Current consecutive-stall count. */
   readonly stallCount: number
+  /** Timestamp (ms) until which the pause lasts, when a pause is active. */
+  readonly pausedUntil?: number
   /** Human-readable reason. */
   readonly reason: string
 }
@@ -184,20 +192,24 @@ export interface ConvergenceVerdict {
  *
  * The tracker counts consecutive "stalled" cycles — cycles where nothing
  * was applied, or where applied assets were immediately rolled back as
- * regressions. When the count reaches {@link ConvergenceConfig.stallThreshold},
- * the tracker signals the caller to auto-degrade from `auto-apply` mode
- * to `propose` mode, preventing an unbounded "propose → fail → propose"
- * loop that burns tokens without making progress.
+ * regressions. When the count reaches
+ * {@link ConvergenceConfig.stallThreshold}, the loop pauses auto-apply for
+ * {@link ConvergenceConfig.stallPauseMs}, preventing an unbounded
+ * "propose → fail → propose" loop that burns tokens without making progress.
  *
- * A single productive cycle (`applied` with no rollbacks) resets the
- * stall counter to zero.
+ * A single productive cycle (`applied` with no rollbacks) resets the stall
+ * counter; so does the expiry of an active pause, so auto-apply resumes on a
+ * clean slate.
  */
 export class ConvergenceTracker {
   private stallCount = 0
   private readonly stallThreshold: number
+  private readonly stallPauseMs: number
+  private pauseUntil: number | undefined
 
   constructor(config: ConvergenceConfig = {}) {
     this.stallThreshold = config.stallThreshold ?? 3
+    this.stallPauseMs = config.stallPauseMs ?? 30 * 60_000
   }
 
   /** Current consecutive-stall count (diagnostics/dashboard). */
@@ -205,37 +217,104 @@ export class ConvergenceTracker {
     return this.stallCount
   }
 
+  /** Timestamp (ms) until which the loop is paused, or `undefined`. */
+  get pausedUntil(): number | undefined {
+    return this.pauseUntil
+  }
+
+  /**
+   * Whether a pause is active right now. Once the pause expires the stall
+   * counter is reset, so the next cycle starts from a clean slate.
+   */
+  isPaused(now = Date.now()): boolean {
+    if (this.pauseUntil === undefined) return false
+    if (now >= this.pauseUntil) {
+      this.stallCount = 0
+      this.pauseUntil = undefined
+      return false
+    }
+    return true
+  }
+
   /**
    * Record one cycle's outcome and return the new verdict.
    *
-   * - `applied` (with no rollbacks) resets the stall counter.
-   * - Any other outcome increments it.
-   * - When the counter reaches the threshold, {@link shouldDegrade}
-   *   flips to `true` and stays there until a productive cycle resets it.
+   * - `applied` (with no rollbacks) resets the stall counter and any pause.
+   * - Any other outcome increments the counter.
+   * - When the counter reaches the threshold, {@link shouldPause} flips to
+   *   `true` and {@link pausedUntil} is set; the loop pauses until then.
    */
-  record(outcome: CycleOutcome): ConvergenceVerdict {
+  record(outcome: CycleOutcome, now = Date.now()): ConvergenceVerdict {
     if (outcome === 'applied') {
       this.stallCount = 0
+      this.pauseUntil = undefined
       return {
-        shouldDegrade: false,
+        shouldPause: false,
         stallCount: 0,
         reason: 'productive cycle (something applied, nothing rolled back)',
       }
     }
     this.stallCount++
-    const shouldDegrade = this.stallCount >= this.stallThreshold
+    if (this.stallCount >= this.stallThreshold) {
+      this.pauseUntil = now + this.stallPauseMs
+      return {
+        shouldPause: true,
+        stallCount: this.stallCount,
+        pausedUntil: this.pauseUntil,
+        reason: `${this.stallCount} consecutive stalled cycles — pausing auto-apply for ${this.stallPauseMs}ms`,
+      }
+    }
     return {
-      shouldDegrade: shouldDegrade,
+      shouldPause: false,
       stallCount: this.stallCount,
-      reason: shouldDegrade
-        ? `${this.stallCount} consecutive stalled cycles — auto-degrading to propose mode`
-        : `stalled cycle (${outcome}), stall count ${this.stallCount}/${this.stallThreshold}`,
+      reason: `stalled cycle (${outcome}), stall count ${this.stallCount}/${this.stallThreshold}`,
     }
   }
 
   /** Reset the tracker (mainly for tests, or after a manual mode change). */
   reset(): void {
     this.stallCount = 0
+    this.pauseUntil = undefined
+  }
+}
+
+/**
+ * Per-key cooldown gate for the evolution loop.
+ *
+ * After a trigger cycle for an observation key ends without a net positive
+ * (nothing applied, or a regression rollback), the key is "cooled" for
+ * `cooldownMs`: further triggers for the same key are skipped so the loop
+ * cannot thrash (propose → fail → propose) and burn tokens on a signal that
+ * just failed. A productive cycle never cools its key; a regression rollback
+ * always does.
+ */
+export class CooldownGate {
+  private readonly cooldowns = new Map<string, number>()
+  private readonly cooldownMs: number
+
+  constructor(cooldownMs: number) {
+    this.cooldownMs = cooldownMs
+  }
+
+  /** Whether the key is inside its cooldown window right now. */
+  isCooled(key: string, now = Date.now()): boolean {
+    const until = this.cooldowns.get(key)
+    if (until === undefined) return false
+    if (now >= until) {
+      this.cooldowns.delete(key)
+      return false
+    }
+    return true
+  }
+
+  /** Cool the key for `ms` (defaults to the gate's cooldown). */
+  mark(key: string, now = Date.now(), ms = this.cooldownMs): void {
+    this.cooldowns.set(key, now + ms)
+  }
+
+  /** Remove any cooldown on the key (e.g. after manual review). */
+  clear(key: string): void {
+    this.cooldowns.delete(key)
   }
 }
 

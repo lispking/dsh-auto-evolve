@@ -81,6 +81,10 @@ The bundle applies a default config; to change it, override the row in your own 
       maxToolCalls: 20
       maxTrialSteps: 12
       maxTrialTokens: 8000
+    evolution:
+      stallThreshold: 3
+      stallPauseMs: 1800000
+      cooldownMs: 600000
 ```
 
 > Note: a patch **replaces** the row's whole config rather than merging into it, so specify every field you want to keep. The plugin's peer services (storage, LLM, tools, skills) come from the dsh-base/web bundles — no extra setup.
@@ -91,7 +95,7 @@ The bundle applies a default config; to change it, override the row in your own 
 |---|---|
 | `observe` | Collect signals, fire triggers, **never propose**. Safe default. |
 | `propose` | Generate and persist candidate mutations when thresholds cross. Candidates await validation/application (manual or via the exported API). |
-| `auto-apply` | Run the full loop: observe → propose → validate → apply verified mutations automatically, with automatic rollback when the same failure key recurs after an apply (regression watch). |
+| `auto-apply` | Run the full loop: observe → propose → validate → apply verified mutations automatically, with automatic rollback when the same failure key recurs after an apply (regression watch). After repeated stalled cycles the loop pauses (convergence) and each failed/rolled-back key enters a cooldown, so it cannot thrash propose → fail → propose. |
 
 ### Configuration
 
@@ -108,6 +112,9 @@ The bundle applies a default config; to change it, override the row in your own 
 | `proposal.maxTokens` | `2000` | Max output tokens for one proposal call. |
 | `validation.maxTrialMs` / `maxToolCalls` | `30000` / `20` | Trial wall-clock and tool-call caps. |
 | `validation.maxTrialSteps` / `maxTrialTokens` | `12` / `8000` | Trial model-step and per-request token caps. |
+| `evolution.stallThreshold` | `3` | Consecutive stalled cycles before auto-apply pauses. |
+| `evolution.stallPauseMs` | `1800000` | How long an auto-apply pause lasts (ms) before it resumes. |
+| `evolution.cooldownMs` | `600000` | Per-key cooldown (ms) after a failed or rolled-back cycle. |
 
 ## Programmatic API
 

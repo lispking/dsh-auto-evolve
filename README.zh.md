@@ -81,6 +81,10 @@ bundle 应用一份默认配置;如需修改,在你自己 profile 的 patch(在�
       maxToolCalls: 20
       maxTrialSteps: 12
       maxTrialTokens: 8000
+    evolution:
+      stallThreshold: 3
+      stallPauseMs: 1800000
+      cooldownMs: 600000
 ```
 
 > 注意:patch 会**整体替换**该行的 config 而非合并,所以需要保留的字段都要写上。插件的对等服务(存储、LLM、工具、skill)由 dsh-base / web bundle 提供,无需额外配置。
@@ -91,7 +95,7 @@ bundle 应用一份默认配置;如需修改,在你自己 profile 的 patch(在�
 |---|---|
 | `observe` | 采集信号、触发记录,**从不提议**。安全的默认值。 |
 | `propose` | 阈值越过时生成并持久化候选变异。候选等待验证/应用(手动或通过导出的 API)。 |
-| `auto-apply` | 运行完整闭环:观察 → 提议 → 验证 → 自动应用通过验证的变异,并在同一失败 key 于应用后再次出现时自动回滚(回归监视)。 |
+| `auto-apply` | 运行完整闭环:观察 → 提议 → 验证 → 自动应用通过验证的变异,并在同一失败 key 于应用后再次出现时自动回滚(回归监视)。连续停滞达到阈值后自动暂停(收敛),失败/回滚后的 key 进入冷却期,避免"提议 → 失败 → 再提议"的抖动。 |
 
 ### 配置
 
@@ -108,6 +112,9 @@ bundle 应用一份默认配置;如需修改,在你自己 profile 的 patch(在�
 | `proposal.maxTokens` | `2000` | 一次提议调用的最大输出 token 数。 |
 | `validation.maxTrialMs` / `maxToolCalls` | `30000` / `20` | 试运行的墙钟与工具调用上限。 |
 | `validation.maxTrialSteps` / `maxTrialTokens` | `12` / `8000` | 试运行的模型步数上限与单次请求 token 上限。 |
+| `evolution.stallThreshold` | `3` | 连续停滞周期数,达到后暂停 auto-apply。 |
+| `evolution.stallPauseMs` | `1800000` | 一次收敛暂停的时长(毫秒),到期后自动恢复。 |
+| `evolution.cooldownMs` | `600000` | 失败/回滚周期后,同一观察 key 的冷却时长(毫秒)。 |
 
 ## 编程 API
 

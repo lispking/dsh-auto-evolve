@@ -19,11 +19,14 @@ import { installObservations } from './observe/collector.ts'
 import { runProposalCycle } from './propose/cycle.ts'
 import { resolveProposalTarget } from './propose/engine.ts'
 import {
+  classifyCycle,
+  CooldownGate,
+  ConvergenceTracker,
   rollBackRegressions,
   runAutoApplyCycle,
   trackApplied,
 } from './evolve/loop.ts'
-import type { RegressionWatch } from './evolve/loop.ts'
+import type { CycleOutcome, RegressionWatch } from './evolve/loop.ts'
 
 export const name = 'self-evolve'
 
@@ -133,6 +136,15 @@ export interface Config {
     maxTrialSteps?: number
     maxTrialTokens?: number
   }
+  /** Evolution-loop safeguards: convergence pause + per-key cooldown. */
+  evolution?: {
+    /** Consecutive stalled cycles before auto-apply pauses. Default 3. */
+    stallThreshold?: number
+    /** How long a convergence pause lasts (ms). Default 30 min. */
+    stallPauseMs?: number
+    /** Per-key cooldown after a failed or rolled-back cycle (ms). Default 10 min. */
+    cooldownMs?: number
+  }
 }
 
 export const Config: z<Config> = z.object({
@@ -158,6 +170,11 @@ export const Config: z<Config> = z.object({
     maxToolCalls: z.number().default(20),
     maxTrialSteps: z.number().default(12),
     maxTrialTokens: z.number().default(8000),
+  }),
+  evolution: z.object({
+    stallThreshold: z.number().default(3),
+    stallPauseMs: z.number().default(30 * 60_000),
+    cooldownMs: z.number().default(10 * 60_000),
   }),
 })
 
@@ -193,6 +210,20 @@ export function apply(ctx: Context, config: Config): void {
 
   // Shared cost ledger for the lifetime of this plugin instance.
   const costLedger = new CostLedger()
+
+  // Evolution safeguards shared by every trigger cycle of this instance: a
+  // convergence tracker that pauses auto-apply after repeated stalls, and a
+  // per-key cooldown gate that prevents propose → fail → propose thrash.
+  const evolution = config.evolution as {
+    stallThreshold: number
+    stallPauseMs: number
+    cooldownMs: number
+  }
+  const convergence = new ConvergenceTracker({
+    stallThreshold: evolution.stallThreshold,
+    stallPauseMs: evolution.stallPauseMs,
+  })
+  const cooldown = new CooldownGate(evolution.cooldownMs)
 
   // Mount services. Startup failures (config or domain open errors) reject
   // the returned fiber; surface them as logged errors instead of letting them
@@ -237,8 +268,9 @@ export function apply(ctx: Context, config: Config): void {
         void (async () => {
           if (mode === 'auto-apply') {
             const applier = injected.selfEvolveApplier
-            // Regression first: the same key recurring inside the observation
-            // window means an applied fix did not hold — roll it back.
+            // Regression safety always runs first: a recurring key inside the
+            // observation window means an applied fix did not hold. Cooldown
+            // and convergence pause gate the (re-)proposal, never a rollback.
             const rolledBack = await rollBackRegressions(
               applier,
               watch,
@@ -249,35 +281,60 @@ export function apply(ctx: Context, config: Config): void {
               injected.logger.info(`[self-evolve] rolled back ${assetId}: regression on ${signal.key}`)
             }
 
-            // The trial and proposal calls share one provider/model route.
-            const target = await resolveProposalTarget(injected)
-            if (target === undefined) {
-              injected.logger.warn('[self-evolve] auto-apply skipped: no LLM provider registered')
+            // Classify this trigger for the convergence tracker. Anything but
+            // a clean apply cools the key so the same signal cannot thrash.
+            let outcome: CycleOutcome = 'empty'
+            if (rolledBack.length > 0) {
+              // The applied fix did not hold: skip re-proposing and count the
+              // cycle as stalled.
+              outcome = 'rolled-back'
+            } else if (convergence.isPaused()) {
+              injected.logger.info('[self-evolve] auto-apply paused: convergence stall limit reached')
               return
+            } else if (cooldown.isCooled(signal.key)) {
+              injected.logger.info(`[self-evolve] auto-apply skipped: ${signal.key} is in cooldown`)
+              return
+            } else {
+              // The trial and proposal calls share one provider/model route.
+              const target = await resolveProposalTarget(injected)
+              if (target === undefined) {
+                injected.logger.warn('[self-evolve] auto-apply skipped: no LLM provider registered')
+                return
+              }
+
+              const result = await runAutoApplyCycle(injected, store, applier, {
+                provider: target.provider,
+                model: target.model,
+                maxTokens: proposal.maxTokens,
+                maxPromptChars: proposal.maxPromptChars,
+                maxMutations: proposal.maxProposalsPerTrigger,
+                maxObservations: proposal.maxEpisodesPerProposal,
+                bounds: {
+                  maxTrialMs: validation.maxTrialMs,
+                  maxToolCalls: validation.maxToolCalls,
+                  maxTrialSteps: validation.maxTrialSteps,
+                  maxTrialTokens: validation.maxTrialTokens,
+                },
+                budget,
+                costLedger,
+              })
+              trackApplied(watch, result, signal.key)
+              outcome = classifyCycle(result, 0)
+              injected.logger.info(
+                `[self-evolve] auto-apply: proposed ${result.proposed}, ` +
+                `applied [${result.applied.join(', ')}], rejected [${result.rejected.join(', ')}], ` +
+                `skipped [${result.skipped.join(', ')}]`,
+              )
             }
 
-            const result = await runAutoApplyCycle(injected, store, applier, {
-              provider: target.provider,
-              model: target.model,
-              maxTokens: proposal.maxTokens,
-              maxPromptChars: proposal.maxPromptChars,
-              maxMutations: proposal.maxProposalsPerTrigger,
-              maxObservations: proposal.maxEpisodesPerProposal,
-              bounds: {
-                maxTrialMs: validation.maxTrialMs,
-                maxToolCalls: validation.maxToolCalls,
-                maxTrialSteps: validation.maxTrialSteps,
-                maxTrialTokens: validation.maxTrialTokens,
-              },
-              budget,
-              costLedger,
-            })
-            trackApplied(watch, result, signal.key)
-            injected.logger.info(
-              `[self-evolve] auto-apply: proposed ${result.proposed}, ` +
-              `applied [${result.applied.join(', ')}], rejected [${result.rejected.join(', ')}], ` +
-              `skipped [${result.skipped.join(', ')}]`,
-            )
+            const verdict = convergence.record(outcome)
+            if (verdict.shouldPause) {
+              injected.logger.info(
+                `[self-evolve] ${verdict.reason}; auto-apply resumes after ` +
+                new Date(verdict.pausedUntil!).toISOString(),
+              )
+            }
+            if (outcome !== 'applied') cooldown.mark(signal.key)
           } else {
             // propose mode: generate and persist candidates; validation and
             // application await manual approval or the exported API.
