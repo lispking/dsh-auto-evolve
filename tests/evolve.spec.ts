@@ -1,19 +1,37 @@
 import { describe, expect, it } from 'vitest'
+import { Context } from '@deepseek-ai/cordis'
+import Storage from '@deepseek-ai/dsh-storage'
+import { DomainFacility } from '@deepseek-ai/dsh-storage-domain'
+import SelfEvolveStore from '../src/storage/store.ts'
 import {
   classifyCycle,
   CooldownGate,
   ConvergenceTracker,
+  loadWatch,
   rollBackRegressions,
   trackApplied,
 } from '../src/evolve/loop.ts'
 import type { AutoApplyResult, RegressionWatch } from '../src/evolve/loop.ts'
 import type { SelfEvolveApplier } from '../src/apply/applier.ts'
+import { MemoryMediaPool, MemoryStorageBackend } from './helpers/memory-backend.ts'
 
 const emptyResult = (): AutoApplyResult => ({ proposed: 0, applied: [], rejected: [], skipped: [] })
 
 /** Minimal applier double exposing only the rollback contract the loop needs. */
 function fakeApplier(reverted: boolean): SelfEvolveApplier {
   return { rollback: async () => ({ reverted }) } as unknown as SelfEvolveApplier
+}
+
+/** Boot the real store composition over a memory backend (pool reusable for restart tests). */
+async function harness(pool = new MemoryMediaPool()) {
+  const ctx = new Context()
+  await ctx.plugin(Storage)
+  ctx.storage.backend.register('memory', new MemoryStorageBackend(pool))
+  const facility = new DomainFacility(ctx, { backend: 'memory', routes: {} })
+  ctx.storage.mount('domain', facility)
+  ctx.provide('storageDomain', facility)
+  await ctx.plugin(SelfEvolveStore)
+  return { ctx, store: ctx.selfEvolveStore }
 }
 
 describe('classifyCycle', () => {
@@ -121,19 +139,19 @@ describe('CooldownGate', () => {
 })
 
 describe('trackApplied', () => {
-  it('records the triggering key and time for every applied asset', () => {
+  it('records the triggering key and time for every applied asset', async () => {
     const watch: RegressionWatch = new Map()
     const result: AutoApplyResult = { proposed: 1, applied: ['a', 'b'], rejected: [], skipped: [] }
 
-    trackApplied(watch, result, 'tool-failure:fetch', 1000)
+    await trackApplied(watch, result, 'tool-failure:fetch', 1000)
 
     expect(watch.get('a')).toEqual({ key: 'tool-failure:fetch', at: 1000 })
     expect(watch.get('b')).toEqual({ key: 'tool-failure:fetch', at: 1000 })
   })
 
-  it('ignores rejected and skipped assets', () => {
+  it('ignores rejected and skipped assets', async () => {
     const watch: RegressionWatch = new Map()
-    trackApplied(watch, { proposed: 2, applied: [], rejected: ['x'], skipped: ['y'] }, 'k', 1000)
+    await trackApplied(watch, { proposed: 2, applied: [], rejected: ['x'], skipped: ['y'] }, 'k', 1000)
     expect(watch.size).toBe(0)
   })
 })
@@ -175,5 +193,55 @@ describe('rollBackRegressions', () => {
 
     expect(rolledBack).toEqual([])
     expect(watch.has('a')).toBe(false) // watch dropped regardless of success
+  })
+})
+
+describe('durable regression watch', () => {
+  it('trackApplied persists entries when a store is provided', async () => {
+    const { store } = await harness()
+    const watch: RegressionWatch = new Map()
+
+    await trackApplied(watch, { proposed: 1, applied: ['a'], rejected: [], skipped: [] }, 'tool-failure:fetch', 1000, store)
+
+    expect(watch.get('a')).toEqual({ key: 'tool-failure:fetch', at: 1000 })
+    expect(store.listWatch()).toEqual([{ assetId: 'a', key: 'tool-failure:fetch', at: 1000 }])
+  })
+
+  it('rollBackRegressions deletes the durable entry alongside the map', async () => {
+    const { store } = await harness()
+    await store.putWatch('a', 'tool-failure:fetch', 1000)
+    const watch: RegressionWatch = new Map([['a', { key: 'tool-failure:fetch', at: 1000 }]])
+
+    const rolledBack = await rollBackRegressions(fakeApplier(true), watch, 'tool-failure:fetch', 60_000, 2000, store)
+
+    expect(rolledBack).toEqual(['a'])
+    expect(watch.size).toBe(0)
+    expect(store.listWatch()).toEqual([])
+  })
+
+  it('rollBackRegressions cleans the durable entry when a watch expires', async () => {
+    const { store } = await harness()
+    await store.putWatch('a', 'tool-failure:fetch', 1000)
+    const watch: RegressionWatch = new Map([['a', { key: 'tool-failure:fetch', at: 1000 }]])
+
+    await rollBackRegressions(fakeApplier(true), watch, 'tool-failure:fetch', 500, 2000, store)
+
+    expect(watch.size).toBe(0)
+    expect(store.listWatch()).toEqual([])
+  })
+
+  it('loadWatch restores the watch across a restart and cleans stale entries', async () => {
+    const pool = new MemoryMediaPool()
+    const first = await harness(pool)
+    await first.store.putWatch('a', 'tool-failure:fetch', 1000) // fresh
+    await first.store.putWatch('b', 'tool-failure:fetch', 100) // stale (> 500ms old)
+    await first.ctx.fiber.dispose()
+
+    const second = await harness(pool)
+    const watch = await loadWatch(second.store, 500, 1000)
+
+    expect([...watch.keys()]).toEqual(['a'])
+    expect(watch.get('a')).toEqual({ key: 'tool-failure:fetch', at: 1000 })
+    expect(second.store.listWatch().map(entry => entry.assetId)).toEqual(['a'])
   })
 })

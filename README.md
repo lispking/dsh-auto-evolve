@@ -95,7 +95,7 @@ The bundle applies a default config; to change it, override the row in your own 
 |---|---|
 | `observe` | Collect signals, fire triggers, **never propose**. Safe default. |
 | `propose` | Generate and persist candidate mutations when thresholds cross. Candidates await validation/application (manual or via the exported API). |
-| `auto-apply` | Run the full loop: observe → propose → validate → apply verified mutations automatically, with automatic rollback when the same failure key recurs after an apply (regression watch). After repeated stalled cycles the loop pauses (convergence) and each failed/rolled-back key enters a cooldown, so it cannot thrash propose → fail → propose. |
+| `auto-apply` | Run the full loop: observe → propose → validate → apply verified mutations automatically, with automatic rollback when the same failure key recurs after an apply (regression watch). After repeated stalled cycles the loop pauses (convergence) and each failed/rolled-back key enters a cooldown, so it cannot thrash propose → fail → propose. The regression watch is persisted, so applied fixes stay monitored across plugin restarts. |
 
 ### Configuration
 

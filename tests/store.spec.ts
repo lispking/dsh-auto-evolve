@@ -7,10 +7,10 @@ import type { GenomeAsset } from '../src/storage/spec.ts'
 import { MemoryMediaPool, MemoryStorageBackend } from './helpers/memory-backend.ts'
 
 /** Boot the real storage/domain/store composition over a memory backend. */
-async function harness() {
+async function harness(pool = new MemoryMediaPool()) {
   const ctx = new Context()
   await ctx.plugin(Storage)
-  ctx.storage.backend.register('memory', new MemoryStorageBackend(new MemoryMediaPool()))
+  ctx.storage.backend.register('memory', new MemoryStorageBackend(pool))
   const facility = new DomainFacility(ctx, { backend: 'memory', routes: {} })
   ctx.storage.mount('domain', facility)
   ctx.provide('storageDomain', facility)
@@ -123,5 +123,29 @@ describe('SelfEvolveStore', () => {
     expect(store.state()).toEqual({ generation: 0, cycleActive: false })
     await store.setState({ generation: 1, cycleActive: true })
     expect(store.state()).toEqual({ generation: 1, cycleActive: true })
+  })
+
+  it('round-trips regression-watch entries', async () => {
+    const { store } = await harness()
+    expect(store.listWatch()).toEqual([])
+
+    await store.putWatch('skill:retry-helper', 'tool-failure:fetch', 1000)
+    await store.putWatch('skill:other', 'request-error:x', 2000)
+    expect(store.listWatch()).toHaveLength(2)
+
+    expect(await store.deleteWatch('skill:retry-helper')).toBe(true)
+    expect(store.listWatch().map(entry => entry.assetId)).toEqual(['skill:other'])
+  })
+
+  it('keeps regression-watch entries across a restart (pooled medium)', async () => {
+    const pool = new MemoryMediaPool()
+    const first = await harness(pool)
+    await first.store.putWatch('skill:retry-helper', 'tool-failure:fetch', 1000)
+    await first.ctx.fiber.dispose()
+
+    const second = await harness(pool)
+    expect(second.store.listWatch()).toEqual([
+      { assetId: 'skill:retry-helper', key: 'tool-failure:fetch', at: 1000 },
+    ])
   })
 })

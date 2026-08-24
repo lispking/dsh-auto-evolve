@@ -319,26 +319,33 @@ export class CooldownGate {
 }
 
 /**
- * Record a watch for every freshly applied asset from an auto-apply run.
+ * Record a watch for every freshly applied asset from an auto-apply run, and
+ * mirror the entries durably when a `store` is provided so the watch survives
+ * plugin restarts.
  * @param watch - the caller-owned watch map (per plugin instance).
  * @param result - the run outcome.
  * @param signalKey - the observation key that triggered this cycle.
  * @param now - wall-clock time of the apply (injectable for tests).
+ * @param store - optional durable store; each entry is persisted via
+ *   {@link SelfEvolveStore.putWatch} when given.
  */
-export function trackApplied(
+export async function trackApplied(
   watch: RegressionWatch,
   result: AutoApplyResult,
   signalKey: string,
   now = Date.now(),
-): void {
+  store?: SelfEvolveStore,
+): Promise<void> {
   for (const assetId of result.applied) {
     watch.set(assetId, { key: signalKey, at: now })
+    if (store !== undefined) await store.putWatch(assetId, signalKey, now)
   }
 }
 
 /**
  * Scan the watch map for a regression: an asset applied for `signalKey`
- * within the window whose key recurs now. Roll it back and drop the watch.
+ * within the window whose key recurs now. Roll it back and drop the watch —
+ * including the durable entry when a `store` is provided.
  * @returns the ids rolled back.
  */
 export async function rollBackRegressions(
@@ -347,19 +354,45 @@ export async function rollBackRegressions(
   signalKey: string,
   windowMs: number,
   now = Date.now(),
+  store?: SelfEvolveStore,
 ): Promise<string[]> {
   const rolledBack: string[] = []
   for (const [assetId, entry] of [...watch]) {
     if (entry.key !== signalKey) continue
     if (now - entry.at > windowMs) {
       watch.delete(assetId)
+      if (store !== undefined) await store.deleteWatch(assetId)
       continue
     }
     const result = await applier.rollback(assetId, `regression: ${signalKey} recurred after apply`)
     watch.delete(assetId)
+    if (store !== undefined) await store.deleteWatch(assetId)
     if (result.reverted) rolledBack.push(assetId)
   }
   return rolledBack
+}
+
+/**
+ * Rebuild the regression watch from durable storage. Entries older than
+ * `maxAgeMs` (e.g. the observation window) are dropped and cleaned from the
+ * store, mirroring the staleness rule of {@link rollBackRegressions}. Called
+ * once at plugin startup so applied assets stay monitored across restarts.
+ * @returns a fresh in-memory watch seeded from the durable entries.
+ */
+export async function loadWatch(
+  store: SelfEvolveStore,
+  maxAgeMs = Number.POSITIVE_INFINITY,
+  now = Date.now(),
+): Promise<RegressionWatch> {
+  const watch: RegressionWatch = new Map()
+  for (const entry of store.listWatch()) {
+    if (now - entry.at > maxAgeMs) {
+      await store.deleteWatch(entry.assetId)
+      continue
+    }
+    watch.set(entry.assetId, { key: entry.key, at: entry.at })
+  }
+  return watch
 }
 
 /** Convenience re-export for consumers that only need the candidate type. */

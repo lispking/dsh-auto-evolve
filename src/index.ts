@@ -22,6 +22,7 @@ import {
   classifyCycle,
   CooldownGate,
   ConvergenceTracker,
+  loadWatch,
   rollBackRegressions,
   runAutoApplyCycle,
   trackApplied,
@@ -39,6 +40,7 @@ export {
   ledgerEntrySchema,
   observationRecordSchema,
   selfEvolveDomainSpec,
+  watchEntrySchema,
 } from './storage/spec.ts'
 export type {
   AssetStatus,
@@ -48,6 +50,7 @@ export type {
   LedgerEntry,
   ObservationKind,
   ObservationRecord,
+  WatchEntry,
 } from './storage/spec.ts'
 export { installObservations } from './observe/collector.ts'
 export type { ObservationConfig, TriggerSignal } from './observe/collector.ts'
@@ -64,6 +67,7 @@ export type { MetricComparison, TrialMetrics, TrialOutcome } from './validate/me
 export { runTrial, validateMutations } from './validate/trial.ts'
 export type { TrialBounds, TrialRequest, ValidationRun } from './validate/trial.ts'
 export {
+  loadWatch,
   rollBackRegressions,
   runAutoApplyCycle,
   trackApplied,
@@ -247,8 +251,18 @@ export function apply(ctx: Context, config: Config): void {
   ctx.inject(observationDeps, (injected) => {
     const store = injected.selfEvolveStore
     // Regression watch for auto-apply: applied asset id → the observation key
-    // that justified it, plus the apply time. In-memory per plugin instance.
+    // that justified it, plus the apply time. Restored from durable storage
+    // (entries older than the observation window are stale and dropped), so
+    // applied assets stay monitored across plugin restarts. The restore fills
+    // the same map instance listeners already close over.
     const watch: RegressionWatch = new Map()
+    void loadWatch(store, observation.windowMs)
+      .then((restored) => {
+        for (const [assetId, entry] of restored) watch.set(assetId, entry)
+      })
+      .catch((error: unknown) => {
+        injected.logger.warn(`[self-evolve] failed to restore regression watch: ${String(error)}`)
+      })
 
     installObservations(
       injected,
@@ -276,6 +290,8 @@ export function apply(ctx: Context, config: Config): void {
               watch,
               signal.key,
               observation.windowMs,
+              undefined,
+              store,
             )
             for (const assetId of rolledBack) {
               injected.logger.info(`[self-evolve] rolled back ${assetId}: regression on ${signal.key}`)
@@ -318,7 +334,7 @@ export function apply(ctx: Context, config: Config): void {
                 budget,
                 costLedger,
               })
-              trackApplied(watch, result, signal.key)
+              await trackApplied(watch, result, signal.key, undefined, store)
               outcome = classifyCycle(result, 0)
               injected.logger.info(
                 `[self-evolve] auto-apply: proposed ${result.proposed}, ` +

@@ -17,6 +17,7 @@ import type {
   LedgerEntry,
   ObservationKind,
   ObservationRecord,
+  WatchEntry,
 } from './spec.ts'
 
 declare module '@deepseek-ai/cordis' {
@@ -46,6 +47,7 @@ export class SelfEvolveStore extends Service {
   private genomeTable?: KvTable<string, GenomeAsset>
   private ledgerTable?: KvTable<string, LedgerEntry>
   private observationsTable?: KvTable<string, ObservationRecord>
+  private watchTable?: KvTable<string, WatchEntry>
   private stateGlobal?: DomainGlobal<GenomeState>
   /** Monotonic ledger clock: guarantees a stable newest-first order even for same-ms writes. */
   private lastLedgerAt = 0
@@ -64,6 +66,7 @@ export class SelfEvolveStore extends Service {
     this.genomeTable = domain.table('genome')
     this.ledgerTable = domain.table('ledger')
     this.observationsTable = domain.table('observations')
+    this.watchTable = domain.table('watch')
     this.stateGlobal = domain.global
   }
 
@@ -195,6 +198,23 @@ export class SelfEvolveStore extends Service {
     return removed
   }
 
+  // --- regression watch ---------------------------------------------------
+
+  /** Persist one regression-watch entry (applied asset → justifying key). */
+  putWatch(assetId: string, key: string, at = Date.now()): Promise<void> {
+    return this.requireWatch().put(assetId, { assetId, key, at })
+  }
+
+  /** Drop one regression-watch entry (asset rolled back or expired). */
+  deleteWatch(assetId: string): Promise<boolean> {
+    return this.requireWatch().delete(assetId)
+  }
+
+  /** Snapshot of every persisted regression-watch entry. */
+  listWatch(): WatchEntry[] {
+    return [...this.requireWatch().entries()].map(([, entry]) => entry)
+  }
+
   // --- state ------------------------------------------------------------
 
   /** Current genome generation and cycle flag. */
@@ -229,6 +249,13 @@ export class SelfEvolveStore extends Service {
       throw new Error('self-evolve: observations table is not initialized')
     }
     return this.observationsTable
+  }
+
+  private requireWatch(): KvTable<string, WatchEntry> {
+    if (this.watchTable === undefined) {
+      throw new Error('self-evolve: watch table is not initialized')
+    }
+    return this.watchTable
   }
 
   private requireState(): DomainGlobal<GenomeState> {

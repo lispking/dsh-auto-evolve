@@ -114,6 +114,22 @@ export const observationRecordSchema = z.object({
 })
 export type ObservationRecord = z.infer<typeof observationRecordSchema>
 
+/**
+ * One durable regression-watch entry: an applied asset id → the observation
+ * key that justified it plus the apply time. Persisted so the regression
+ * watch survives plugin restarts — the in-memory map alone would lose every
+ * applied asset's justification on restart.
+ */
+export const watchEntrySchema = z.object({
+  /** The watched applied asset id (`<kind>:<name>`). */
+  assetId: z.string().min(1),
+  /** The observation key (e.g. `tool-failure:fetch`) that justified the apply. */
+  key: z.string().min(1),
+  /** Epoch ms when the asset was applied — start of the regression window. */
+  at: nonNegativeSafeInteger,
+})
+export type WatchEntry = z.infer<typeof watchEntrySchema>
+
 /** Runtime state shared across the plugin (mode is config; generation is durable). */
 export const genomeStateSchema = z.object({
   /** Monotonic genome generation: bumps on every applied mutation batch. */
@@ -135,5 +151,6 @@ export const selfEvolveDomainSpec = defineDomain({
     genome: domainTable<string, GenomeAsset>(genomeAssetSchema),
     ledger: domainTable<string, LedgerEntry>(ledgerEntrySchema),
     observations: domainTable<string, ObservationRecord>(observationRecordSchema),
+    watch: domainTable<string, WatchEntry>(watchEntrySchema),
   },
 })
