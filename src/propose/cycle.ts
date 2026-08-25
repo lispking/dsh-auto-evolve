@@ -69,6 +69,11 @@ export async function runProposalCycle(
   const state = store.state()
   if (state.cycleActive) return 0
 
+  // Hoisted so the finally block can reset the per-cycle tally. When the
+  // caller shares a ledger across cycles the reset keeps maxCostPerCycle
+  // bounding one cycle instead of the plugin's cumulative lifetime spend.
+  const ledger = options.costLedger ?? new CostLedger()
+
   await store.setState({ ...state, cycleActive: true })
   try {
     const target = options.provider !== undefined && options.model !== undefined
@@ -81,7 +86,6 @@ export async function runProposalCycle(
 
     // Budget gate: estimate the proposal token cost and skip the call when
     // the per-cycle or per-day cap is exceeded.
-    const ledger = options.costLedger ?? new CostLedger()
     if (options.budget !== undefined) {
       const estimate = estimateProposalTokens(options.maxPromptChars, options.maxTokens)
       const verdict = ledger.check(estimate, options.budget)
@@ -153,6 +157,9 @@ export async function runProposalCycle(
   } finally {
     const latest = store.state()
     await store.setState({ ...latest, cycleActive: false })
+    // Reset the per-cycle tally so maxCostPerCycle bounds one proposal
+    // cycle rather than the plugin's cumulative lifetime spend.
+    ledger.resetCycle()
   }
 }
 

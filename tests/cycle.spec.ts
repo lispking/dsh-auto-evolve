@@ -7,6 +7,7 @@ import type { GenerateOptions, StreamChunk } from '@deepseek-ai/dsh-llm'
 import SelfEvolveStore from '../src/storage/store.ts'
 import { runProposalCycle } from '../src/propose/cycle.ts'
 import { generateProposal } from '../src/propose/engine.ts'
+import { CostLedger, estimateProposalTokens } from '../src/propose/budget.ts'
 import { MemoryMediaPool, MemoryStorageBackend } from './helpers/memory-backend.ts'
 
 /** A fake LLM adapter whose stream returns one canned text block. */
@@ -184,5 +185,68 @@ describe('runProposalCycle', () => {
       maxObservations: 5,
     })
     expect(materialized).toBe(0)
+  })
+
+  it('resets the per-cycle ledger after each cycle so the cap is per-cycle', async () => {
+    const { ctx, store } = await harness()
+    ctx.llm.registerAdapter(['fake'], new ScriptedAdapter(VALID_PROPOSAL))
+    const ledger = new CostLedger()
+    // One proposal costs estimateProposalTokens(4000, 500) = 1500 tokens.
+    // A 2000-token cap fits one cycle but not two without a reset.
+    const options = {
+      provider: 'fake',
+      model: 'm',
+      maxTokens: 500,
+      maxPromptChars: 4000,
+      maxMutations: 2,
+      maxObservations: 5,
+      budget: { maxCostPerCycle: 2000 },
+      costLedger: ledger,
+    }
+
+    expect(await runProposalCycle(ctx, store, options)).toBe(1)
+    expect(ledger.cycleSpent).toBe(0) // reset in the finally block
+    expect(ledger.dailySpent).toBe(estimateProposalTokens(4000, 500))
+
+    // Second cycle with a *different* mutation (new asset id) so the dedup
+    // layer does not drop it — proving the cap is per-cycle, not cumulative.
+    ctx.llm.registerAdapter(['fake-v2'], new ScriptedAdapter(JSON.stringify({
+      rationale: 'add a second helper',
+      expectedImpact: 'fewer failures',
+      mutations: [
+        {
+          operator: 'add',
+          kind: 'skill',
+          targetId: '',
+          name: 'retry-v2',
+          description: 'Second retry helper',
+          content: '# Retry Helper v2\n\nRetry with jitter.',
+        },
+      ],
+    })))
+    expect(await runProposalCycle(ctx, store, { ...options, provider: 'fake-v2' })).toBe(1)
+    expect(ledger.cycleSpent).toBe(0)
+    expect(ledger.dailySpent).toBe(estimateProposalTokens(4000, 500) * 2)
+  })
+
+  it('skips a single cycle whose estimate exceeds the per-cycle cap', async () => {
+    const { ctx, store } = await harness()
+    ctx.llm.registerAdapter(['fake'], new ScriptedAdapter(VALID_PROPOSAL))
+    const ledger = new CostLedger()
+
+    const materialized = await runProposalCycle(ctx, store, {
+      provider: 'fake',
+      model: 'm',
+      maxTokens: 500,
+      maxPromptChars: 4000,
+      maxMutations: 2,
+      maxObservations: 5,
+      budget: { maxCostPerCycle: 1000 }, // below the 1500 estimate
+      costLedger: ledger,
+    })
+
+    expect(materialized).toBe(0)
+    expect(ledger.cycleSpent).toBe(0)
+    expect(store.getAsset('skill:retry-helper')).toBeUndefined()
   })
 })
