@@ -199,22 +199,26 @@ export function getObservationTrend(
   now: number = Date.now(),
 ): ObservationTrend | undefined {
   const since = now - windowMs
+  // Guard the divisor: a zero or negative bucket width would turn
+  // windowMs / bucketMs into Infinity (or a negative count) and the bucket
+  // loop below would never terminate. Fall back to the default width.
+  const step = bucketMs > 0 ? bucketMs : 300_000
   const records = store
     .listObservations()
     .filter((record) => record.kind === kind && record.lastAt >= since)
   if (records.length === 0) return undefined
 
-  const bucketCount = Math.ceil(windowMs / bucketMs)
+  const bucketCount = Math.ceil(windowMs / step)
   const buckets: TrendBucket[] = []
   for (let i = 0; i < bucketCount; i++) {
-    buckets.push({ bucketStart: since + i * bucketMs, hits: 0, distinctKeys: 0 })
+    buckets.push({ bucketStart: since + i * step, hits: 0, distinctKeys: 0 })
   }
 
   const distinctKeysPerBucket = new Map<number, Set<string>>()
   for (const record of records) {
     const offset = record.lastAt - since
     if (offset < 0) continue
-    const bucketIndex = Math.min(Math.floor(offset / bucketMs), bucketCount - 1)
+    const bucketIndex = Math.min(Math.floor(offset / step), bucketCount - 1)
     const bucket = buckets[bucketIndex]!
     const keySet = distinctKeysPerBucket.get(bucketIndex) ?? new Set<string>()
     keySet.add(record.key)
@@ -238,7 +242,7 @@ export function getObservationTrend(
 
   return {
     kind,
-    bucketMs,
+    bucketMs: step,
     buckets: trimmed,
     totalHits: trimmed.reduce((sum, bucket) => sum + bucket.hits, 0),
   }
