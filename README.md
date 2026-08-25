@@ -20,7 +20,7 @@ Observe ──▶ Propose ──▶ Validate ──▶ Apply ──▶ (observe 
 | Layer | Module | What it does |
 |---|---|---|
 | **Observe** | `src/observe` | Listens on `tools/result` and `agent/request-error`; records deduplicated signals (tool failures, no-progress repeats, request errors) into the durable observations table; fires `onTrigger` when a threshold crosses. |
-| **Propose** | `src/propose` | A bounded cycle snapshots the genome + recent observations, calls `ctx.llm.stream()` with a strict prompt, and validates the model output against a closed mutation vocabulary (`add` / `patch` / `retire` over `skill` / `post-processor` / `prompt-section` / `guard-policy`). Anything that fails parsing or schema validation is discarded — never applied. |
+| **Propose** | `src/propose` | A bounded cycle snapshots the genome + recent observations, calls `ctx.llm.stream()` with a strict prompt, and validates the model output against a closed mutation vocabulary (`add` / `patch` / `retire` over `skill` / `post-processor` / `prompt-section` / `guard-policy`). Anything that fails parsing or schema validation is discarded — never applied. Mutations whose content fingerprint already matches a pending `candidate` are dropped, so the same patch is never re-trialed while awaiting validation. |
 | **Validate** | `src/validate` | Replays the failing episode inside a fresh scoped sub-agent (`ctx.agents.create` + `setup`), once without the candidate mutations (baseline) and once with them (trial), then compares metrics: completion, tool failures, tool-call cost. Every kind with a runtime contribution — skill, tool-wrapper, guard-policy, post-processor — is exercised via the shared mutation applier (the same code the live apply path uses, so validation == deployment); prompt-section candidates are recorded but not auto-applied. |
 | **Apply** | `src/apply` | Promotes a validated candidate to the live genome: skills are registered on the plugin context via `ctx.skills.register` (immediately visible), the ledger records the apply with the previous content captured, and the disposer is kept for rollback. |
 | **Rollback** | `src/apply` | Unregisters the live contribution, restores the parent content as a fresh candidate, and writes a `rollback` ledger entry. On plugin disposal every live registration is torn down. |
@@ -29,6 +29,7 @@ Observe ──▶ Propose ──▶ Validate ──▶ Apply ──▶ (observe 
 
 - **The mutation vocabulary is code, the content is model-generated.** The LLM never invents asset kinds or operators; it only fills in payloads that pass the closed zod schema.
 - **Validation is by execution, not by self-claim.** A proposal is applied only when a sandboxed trial beats the baseline on observable metrics.
+- **Cost is capped per cycle and per day.** The budget gate (`maxCostPerCycle` / `dailyBudget`) bounds the proposal call and every trial replay in auto-apply; an exhausted cap pauses the loop instead of silently burning tokens.
 - **Rollback is first-class.** Every applied mutation keeps its disposer and its parent content; regression reverts the exact previous state.
 - **Observe-only is the default.** In `observe` mode the plugin never proposes — it just collects signals and logs triggers.
 
@@ -76,6 +77,9 @@ The bundle applies a default config; to change it, override the row in your own 
       maxEpisodesPerProposal: 5
       maxPromptChars: 24000
       maxTokens: 2000
+    budget:
+      maxCostPerCycle: 0       # 0 disables the per-cycle cap
+      dailyBudget: 0           # 0 disables the daily cap
     validation:
       maxTrialMs: 30000
       maxToolCalls: 20
@@ -129,6 +133,8 @@ Availability by mode: all five tools are registered in every mode;
 | `proposal.maxEpisodesPerProposal` | `5` | Max observations rendered into the proposal prompt. |
 | `proposal.maxPromptChars` | `24000` | Prompt size cap (bounds cost). |
 | `proposal.maxTokens` | `2000` | Max output tokens for one proposal call. |
+| `budget.maxCostPerCycle` | `0` (off) | Max tokens spendable in one cycle: the proposal call plus every trial replay in auto-apply. `0` disables the cap. |
+| `budget.dailyBudget` | `0` (off) | Max tokens spendable in one UTC day across all cycles. `0` disables the cap. |
 | `validation.maxTrialMs` / `maxToolCalls` | `30000` / `20` | Trial wall-clock and tool-call caps. |
 | `validation.maxTrialSteps` / `maxTrialTokens` | `12` / `8000` | Trial model-step and per-request token caps. |
 | `evolution.stallThreshold` | `3` | Consecutive stalled cycles before auto-apply pauses. |

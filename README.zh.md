@@ -20,7 +20,7 @@
 | 层 | 模块 | 职责 |
 |---|---|---|
 | **观察** | `src/observe` | 监听 `tools/result` 与 `agent/request-error`;将去重信号(工具失败、无进展的重复调用、请求错误)写入持久化观察表;阈值被越过时触发 `onTrigger`。 |
-| **提议** | `src/propose` | 有界周期快照基因组 + 近期观察,以严格提示词调用 `ctx.llm.stream()`,并用封闭变异词表(`add` / `patch` / `retire`,作用于 `skill` / `post-processor` / `prompt-section` / `guard-policy`)校验模型输出。任何解析或 schema 校验失败都会被丢弃——绝不应用。 |
+| **提议** | `src/propose` | 有界周期快照基因组 + 近期观察,以严格提示词调用 `ctx.llm.stream()`,并用封闭变异词表(`add` / `patch` / `retire`,作用于 `skill` / `post-processor` / `prompt-section` / `guard-policy`)校验模型输出。任何解析或 schema 校验失败都会被丢弃——绝不应用。内容指纹已匹配某个待定 `candidate` 的变异会被剔除,因此同一补丁在等待验证期间不会被重复试炼。 |
 | **验证** | `src/validate` | 在一个全新作用域子 agent(`ctx.agents.create` + `setup`)中重放失败片段:一次不带候选变异(基线),一次带变异(试运行),然后对比指标:完成度、工具失败数、工具调用成本。所有有运行时贡献的 kind —— skill、tool-wrapper、guard-policy、post-processor —— 都通过共享的变异应用器(与线上应用同一套代码,验证即部署)进行试运行;prompt-section 候选只记录、不自动应用。 |
 | **应用** | `src/apply` | 将已验证候选提升为在线基因组:skill 通过 `ctx.skills.register` 注册到插件上下文(立即可见),台账记录本次应用并保存上一版内容,disposer 保留用于回滚。 |
 | **回滚** | `src/apply` | 注销在线贡献,将父版本内容恢复为新的候选,写入 `rollback` 台账条目。插件销毁时所有在线注册被拆除。 |
@@ -29,6 +29,7 @@
 
 - **变异词表是代码,内容是模型生成的。** LLM 无法发明资产种类或算子,只能填写通过封闭 zod schema 校验的载荷。
 - **验证靠执行,而非自我声称。** 只有沙箱试运行在可观测指标上胜过基线时,提案才会被应用。
+- **成本按周期与按日封顶。** 预算门控(`maxCostPerCycle` / `dailyBudget`)约束提议调用与 auto-apply 中的每次试炼重放;上限耗尽时循环暂停,而不是默默烧掉 token。
 - **回滚是一等公民。** 每个已应用变异都保留自己的 disposer 与父版本内容;回归时精确还原上一状态。
 - **默认只观察。** 在 `observe` 模式下插件从不提议,只采集信号并记录触发。
 
@@ -76,6 +77,9 @@ bundle 应用一份默认配置;如需修改,在你自己 profile 的 patch(在�
       maxEpisodesPerProposal: 5
       maxPromptChars: 24000
       maxTokens: 2000
+    budget:
+      maxCostPerCycle: 0       # 0 表示禁用单周期上限
+      dailyBudget: 0           # 0 表示禁用日上限
     validation:
       maxTrialMs: 30000
       maxToolCalls: 20
@@ -126,6 +130,8 @@ provider,且在 `observe` 模式下会拒绝执行。
 | `proposal.maxEpisodesPerProposal` | `5` | 渲染进提议提示词的观察数上限。 |
 | `proposal.maxPromptChars` | `24000` | 提示词大小上限(控制成本)。 |
 | `proposal.maxTokens` | `2000` | 一次提议调用的最大输出 token 数。 |
+| `budget.maxCostPerCycle` | `0`(关闭) | 单周期可消耗的最大 token 数:一次提议调用 + auto-apply 中每次试炼重放。`0` 表示禁用该上限。 |
+| `budget.dailyBudget` | `0`(关闭) | 单个 UTC 日内跨所有周期可消耗的最大 token 数。`0` 表示禁用该上限。 |
 | `validation.maxTrialMs` / `maxToolCalls` | `30000` / `20` | 试运行的墙钟与工具调用上限。 |
 | `validation.maxTrialSteps` / `maxTrialTokens` | `12` / `8000` | 试运行的模型步数上限与单次请求 token 上限。 |
 | `evolution.stallThreshold` | `3` | 连续停滞周期数,达到后暂停 auto-apply。 |
