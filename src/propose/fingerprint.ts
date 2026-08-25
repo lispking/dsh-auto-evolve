@@ -77,17 +77,23 @@ export function dedupMutations(
   const existing = new Set<string>()
   for (const asset of genome) {
     if (asset.status !== 'candidate') continue
-    // Reconstruct a pseudo-mutation to reuse the fingerprint function.
-    existing.add(
-      mutationFingerprint({
-        operator: asset.parentVersion < 0 ? 'add' : 'patch',
-        kind: asset.kind,
-        targetId: asset.id,
-        name: asset.name,
-        description: asset.description,
-        content: asset.content,
-      }),
-    )
+    // Reconstruct a pseudo-mutation to reuse the fingerprint function. The
+    // reconstruction must mirror the shape the original mutation had: an
+    // `add` hashes with an empty targetId (schema-enforced), while
+    // `patch`/`retire` hash with the target asset id. The asset record does
+    // not persist the operator, so a first-generation asset (parentVersion
+    // -1) can only be an `add`; later versions are registered under both the
+    // `patch` and `retire` shapes so either re-proposal is caught.
+    const addOrPatch = asset.parentVersion < 0 ? 'add' : 'patch'
+    const targetId = asset.parentVersion < 0 ? '' : asset.id
+    const base = {
+      kind: asset.kind,
+      name: asset.name,
+      description: asset.description,
+      content: asset.content,
+    }
+    existing.add(mutationFingerprint({ operator: addOrPatch, targetId, ...base }))
+    existing.add(mutationFingerprint({ operator: 'retire', targetId: asset.id, ...base }))
   }
 
   const kept: Mutation[] = []
