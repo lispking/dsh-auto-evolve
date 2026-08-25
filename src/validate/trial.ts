@@ -84,10 +84,13 @@ export interface ValidationRun {
   readonly id: string
   /** Per-episode paired results (one per replayed episode). */
   readonly episodes: readonly PairedEpisodeResult[]
-  /** Legacy single-pair metrics (episode [0]), retained for backward compat. */
-  readonly baseline: TrialMetrics
-  readonly trial: TrialMetrics
-  readonly comparison: MetricComparison
+  /**
+   * Legacy single-pair metrics (episode [0]), retained for backward compat.
+   * Absent when `episodes` was empty — there is no first episode to point at.
+   */
+  readonly baseline?: TrialMetrics
+  readonly trial?: TrialMetrics
+  readonly comparison?: MetricComparison
 }
 
 /** Collect observed tool activity inside a scoped agent world. */
@@ -138,6 +141,10 @@ async function executeTrial(
   }
 
   let handle: { agent: Agent; dispose(): Promise<void> } | undefined
+  // Restores the shared LLM service's stream method when the mock patch must
+  // be undone. Set inside setup when mockStream is requested; invoked in the
+  // finally block so the patch can never outlive this trial.
+  let restoreStream: (() => void) | undefined
   try {
     handle = await ctx.agents.create({
       sessionId,
@@ -174,14 +181,17 @@ async function executeTrial(
         // runs are reproducible without a live provider.
         if (request.mockStream !== undefined) {
           const factory = request.mockStream
-          const originalStream = agentCtx.llm?.stream?.bind(agentCtx.llm) ?? null
           // Monkey-patch the trial agent's llm.stream with the mock factory.
           // We intercept only the call shape; the mock returns a compliant
-          // AsyncIterable<StreamChunk>.
+          // AsyncIterable<StreamChunk>. The llm service resolves through the
+          // provider chain to the shared instance, so the patch must be
+          // undone when the trial ends — restoreStream reattaches the
+          // original bound method in the finally block.
           const llmRef = agentCtx.llm as unknown as {
             stream?: (options: unknown) => AsyncIterable<unknown>
           } | undefined
           if (llmRef !== undefined && llmRef.stream !== undefined) {
+            const original = llmRef.stream.bind(agentCtx.llm)
             llmRef.stream = ((options: unknown) => {
               const req = options as {
                 provider?: string
@@ -200,10 +210,10 @@ async function executeTrial(
                 ...(req.signal !== undefined ? { signal: req.signal } : {}),
               }) as unknown as AsyncIterable<unknown>
             }) as (options: unknown) => AsyncIterable<unknown>
+            restoreStream = () => {
+              llmRef.stream = original
+            }
           }
-          // Suppress unused-variable warning for originalStream (kept for
-          // future restore-on-dispose logic).
-          void originalStream
         }
       },
     })
@@ -250,6 +260,9 @@ async function executeTrial(
     } catch (error: unknown) {
       ctx.logger.warn(`[self-evolve] trial disposal failed: ${String(error)}`)
     }
+    // Undo the mock stream patch so the shared LLM service keeps its real
+    // stream for subsequent trials and the host context.
+    restoreStream?.()
   }
 }
 
@@ -278,6 +291,12 @@ export async function validateMutations(
   request: TrialRequest,
   episodes: readonly string[] = [request.episode],
 ): Promise<ValidationRun> {
+  // Degenerate input: nothing to replay, so there is no baseline/trial pair
+  // and no legacy single-pair verdict. Return a defined empty run instead of
+  // crashing on paired[0].
+  if (episodes.length === 0) {
+    return { id: randomUUID(), episodes: [] }
+  }
   const paired: PairedEpisodeResult[] = []
   for (const episode of episodes) {
     const episodeRequest: TrialRequest = { ...request, episode }
