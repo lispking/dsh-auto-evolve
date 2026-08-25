@@ -26,7 +26,7 @@ import type { SelfEvolveStore } from '../storage/store.ts'
 import type { SelfEvolveApplier } from '../apply/applier.ts'
 import { isTrialExercisable } from '../apply/mutation.ts'
 import type { GenomeAsset } from '../storage/spec.ts'
-import { CostLedger } from '../propose/budget.ts'
+import { CostLedger, estimateTrialTokens } from '../propose/budget.ts'
 import type { BudgetConfig } from '../propose/budget.ts'
 import { runProposalCycle, listCandidates } from '../propose/cycle.ts'
 import { validateMutations } from '../validate/trial.ts'
@@ -96,6 +96,13 @@ export async function runAutoApplyCycle(
   applier: SelfEvolveApplier,
   options: AutoApplyOptions,
 ): Promise<AutoApplyResult> {
+  // One shared ledger for the whole pass: the proposal call and every trial
+  // replay tally toward the same daily budget. Reset the per-cycle tally at
+  // the start so maxCostPerCycle bounds this pass rather than leaking across
+  // passes (proposal resets its own cycle tally in its finally).
+  const ledger = options.costLedger ?? new CostLedger()
+  ledger.resetCycle()
+
   const before = new Set(listCandidates(store).map(asset => asset.id))
   const proposed = await runProposalCycle(ctx, store, {
     provider: options.provider,
@@ -105,7 +112,7 @@ export async function runAutoApplyCycle(
     maxMutations: options.maxMutations,
     maxObservations: options.maxObservations,
     budget: options.budget,
-    costLedger: options.costLedger,
+    costLedger: ledger,
     ...(options.signal !== undefined ? { signal: options.signal } : {}),
   })
   if (proposed === 0) return { proposed, applied: [], rejected: [], skipped: [] }
@@ -114,12 +121,32 @@ export async function runAutoApplyCycle(
   const applied: string[] = []
   const rejected: string[] = []
   const skipped: string[] = []
+  // Each candidate replays the episode twice (baseline + trial), so the
+  // budget estimate covers both replays.
+  const trialEstimate = 2 * estimateTrialTokens(
+    options.bounds.maxTrialTokens ?? 0,
+    options.bounds.maxTrialSteps ?? 0,
+  )
   for (const candidate of fresh) {
     if (!isTrialExercisable(candidate.kind)) {
       // prompt-section candidates have no runtime contribution to replay in
       // this release; they stay candidates for manual validation/application.
       skipped.push(candidate.id)
       continue
+    }
+    // Budget gate: stop validating once the per-cycle or per-day cap would be
+    // exceeded. Cycle spend only grows within a pass, so a rejection here
+    // means every remaining candidate would also be blocked — abort the loop.
+    if (options.budget !== undefined) {
+      const verdict = ledger.check(trialEstimate, options.budget)
+      if (!verdict.allowed) {
+        ctx.logger.warn(
+          `[self-evolve] trial validation skipped: ${verdict.rejection} ` +
+          `(cycle ${verdict.cycleSpent}/${options.budget.maxCostPerCycle ?? 0}, ` +
+          `day ${verdict.dailySpent}/${options.budget.dailyBudget ?? 0})`,
+        )
+        break
+      }
     }
     const run = await validateMutations(ctx, {
       provider: options.provider,
@@ -129,8 +156,14 @@ export async function runAutoApplyCycle(
       bounds: options.bounds,
       ...(options.signal !== undefined ? { signal: options.signal } : {}),
     })
-    if (run.comparison.improved) {
-      const result = await applier.applyCandidate(candidate.id, run.id, run.comparison.reason)
+    // Record the estimated trial spend after the run (same estimate-based
+    // accounting as the proposal phase; usage is not reported by the harness).
+    ledger.record(trialEstimate)
+    // A missing comparison means no episode was replayed — treat as not
+    // improved rather than crashing the caller.
+    const comparison = run.comparison
+    if (comparison?.improved) {
+      const result = await applier.applyCandidate(candidate.id, run.id, comparison.reason)
       if (result !== undefined) applied.push(candidate.id)
       else rejected.push(candidate.id)
     } else {

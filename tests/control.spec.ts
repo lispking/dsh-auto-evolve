@@ -15,7 +15,8 @@ import {
   runCycleTool,
 } from '../src/control/tools.ts'
 import type { OperatorToolOptions } from '../src/control/tools.ts'
-import { CooldownGate, ConvergenceTracker } from '../src/evolve/loop.ts'
+import { CooldownGate, ConvergenceTracker, runAutoApplyCycle } from '../src/evolve/loop.ts'
+import { CostLedger, estimateProposalTokens } from '../src/propose/budget.ts'
 import type { GenomeAsset } from '../src/storage/spec.ts'
 import { MemoryMediaPool, MemoryStorageBackend } from './helpers/memory-backend.ts'
 
@@ -202,5 +203,39 @@ describe('runCycleTool', () => {
   it('rejects in observe mode', async () => {
     const { ctx, store, applier } = await harness()
     await expect(runCycleTool(ctx, options(store, applier, { mode: 'observe' }))).rejects.toThrow('observe')
+  })
+})
+
+describe('runAutoApplyCycle budget gate', () => {
+  it('stops trial validation when the budget gate rejects', async () => {
+    const { ctx, store, applier } = await harness()
+    ctx.llm.registerAdapter(['fake'], new ScriptedAdapter(VALID_PROPOSAL))
+    const ledger = new CostLedger()
+
+    // Proposal estimate is estimateProposalTokens(4000, 500) = 1500; the
+    // trial estimate is 2 × estimateTrialTokens(8000, 12) = 192000. A cap of
+    // 100000 lets the proposal through but gates every trial replay.
+    const result = await runAutoApplyCycle(ctx, store, applier, {
+      provider: 'fake',
+      model: 'm',
+      maxTokens: 500,
+      maxPromptChars: 4000,
+      maxMutations: 2,
+      maxObservations: 5,
+      bounds: { maxTrialMs: 30_000, maxToolCalls: 20, maxTrialSteps: 12, maxTrialTokens: 8000 },
+      budget: { maxCostPerCycle: 100_000 },
+      costLedger: ledger,
+    })
+
+    expect(result.proposed).toBe(1)
+    expect(result.applied).toEqual([])
+    expect(result.rejected).toEqual([])
+    expect(result.skipped).toEqual([])
+    // The candidate was materialized but never validated — the gate aborted
+    // the trial loop before any replay.
+    expect(store.getAsset('skill:retry-helper')?.status).toBe('candidate')
+    // Only the proposal call was billed; the blocked trials spent nothing.
+    expect(ledger.cycleSpent).toBe(0)
+    expect(ledger.dailySpent).toBe(estimateProposalTokens(4000, 500))
   })
 })
